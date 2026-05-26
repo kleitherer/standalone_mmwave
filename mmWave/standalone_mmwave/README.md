@@ -76,7 +76,43 @@ ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null
 - **USB serial (optional):** `ls /dev/cu.usb*` then `--cmd-tty /dev/cu.usbserial-XXXX` (not `/dev/ttyUSB0`).
 - If configure times out: wrong network interface (Wi‑Fi vs DCA Ethernet), DCA off, or Mac firewall blocking UDP.
 
-## Run
+## Record raw captures (for offline algorithms)
+
+Store **raw int16 ADC frames** so you can rerun cube / RDA / tracking / Max later:
+
+```bash
+python3 capture_radar.py --name my_experiment --frames 500 \
+  --cmd-tty /dev/cu.usbserial-00D832110
+```
+
+Creates `captures/YYYYMMDD_HHMMSS_my_experiment/`:
+
+| File | Purpose |
+|------|---------|
+| `raw/frame_*.npy` | Raw ADC (reprocess anytime) |
+| `profile.cfg` | Exact mmWave profile used |
+| `metadata.json` | `radar_params` (range_res, n_chirps, …) |
+| `session.json` | Manifest + data layout |
+| `index.csv` | Frame index + timestamps |
+
+Reprocess later:
+
+```bash
+python3 -m processing.process_capture --capture captures/YYYYMMDD_HHMMSS_my_experiment
+```
+
+Load in Python:
+
+```python
+from capture_store import CaptureSession
+session = CaptureSession.open("captures/YYYYMMDD_HHMMSS_my_experiment")
+for i, raw in session.iter_frames():
+    cube = ...  # processing.frame_to_radar_cube(raw, session.radar_params())
+```
+
+Do **not** store only range/Doppler/angle — always keep **raw**; derived maps can be recomputed.
+
+## Run (live stream)
 
 Copy a `.cfg` from the old repo, e.g.:
 
