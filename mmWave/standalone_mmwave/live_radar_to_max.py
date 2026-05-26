@@ -113,6 +113,7 @@ def main() -> int:
         range_gate_m=(args.roi_min, args.roi_max),
         clutter_window=args.clutter_window,
         smooth_alpha=args.smooth_alpha,
+        presence_threshold_db=args.presence_threshold_db,
     )
     osc = OscSender(args.osc_host, args.osc_port)
 
@@ -167,8 +168,7 @@ def main() -> int:
                 osc.send(args.angle_address, est.angle_deg)
             if not args.no_snr:
                 osc.send(args.snr_address, est.snr_db)
-            present = 1.0 if est.snr_db >= args.presence_threshold_db else 0.0
-            osc.send(args.presence_address, present)
+            osc.send(args.presence_address, est.presence)
 
             if args.bundle_address:
                 osc.send_bundle(

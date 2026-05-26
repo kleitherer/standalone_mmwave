@@ -19,6 +19,7 @@ class LiveRadarTarget:
     angle_deg: float
     snr_db: float
     peak_db: float
+    energy: float
     presence: float
 
 
@@ -38,6 +39,7 @@ class LiveRadarTargetProcessor:
         clutter_window: int = 8,
         smooth_alpha: float = 0.2,
         angle_fft_bins: int = 128,
+        presence_threshold_db: float = 12.0,
     ):
         self.params = params
         self.range_gate_m = range_gate_m
@@ -45,6 +47,7 @@ class LiveRadarTargetProcessor:
         self._clutter_window = max(1, int(clutter_window))
         self._smooth_alpha = float(smooth_alpha)
         self._angle_fft_bins = int(angle_fft_bins)
+        self._presence_threshold_db = float(presence_threshold_db)
         self._rd_history: deque[np.ndarray] = deque(maxlen=self._clutter_window)
         self._smooth: Optional[Tuple[float, float, float]] = None  # range, doppler, angle
 
@@ -115,7 +118,12 @@ class LiveRadarTargetProcessor:
                 )
             range_m, doppler_mps, angle_deg = self._smooth
 
-        presence = 1.0 if snr_db >= 12.0 else 0.0
+        r_lo, r_hi = self.range_gate_m
+        r_mask = (self._range_axis >= r_lo) & (self._range_axis <= r_hi)
+        roi = rd_db[:, r_mask]
+        energy = float(np.sum(10.0 ** (roi.astype(np.float64) / 10.0)))
+
+        presence = 1.0 if snr_db >= self._presence_threshold_db else 0.0
 
         return LiveRadarTarget(
             range_m=range_m,
@@ -123,5 +131,6 @@ class LiveRadarTargetProcessor:
             angle_deg=angle_deg,
             snr_db=snr_db,
             peak_db=peak_db,
+            energy=energy,
             presence=presence,
         )
