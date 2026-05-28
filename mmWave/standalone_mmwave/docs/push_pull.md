@@ -67,10 +67,39 @@ Push/pull mode: see below.
 |------------|---------------|---------|
 | `push_pull.enabled` | `true` for gesture, `false` otherwise | Toggle |
 | `push_pull.snr_within_db_of_max` | `3`–`5` | How close in dB a candidate must be to the max SNR |
+| `push_pull.use_range_derivative_for_doppler` | `true` (temporary) | Send **d(range)/dt** on `/radar/doppler_mps` instead of RD Doppler when push/pull peak rule is active |
 
 Implementation: `processing/target_detect.py` → `pick_rd_peak()`.
 
+**Temporary range rate:** After EMA on range, `doppler_mps = (range_m − range_prev) / frame_dt` using `frame_time` from capture metadata. Positive ≈ moving closer (push), negative ≈ pull away. Disable with `"use_range_derivative_for_doppler": false` or `--no-push-pull-range-derivative`.
+
 CLI overrides: `--push-pull` / `--no-push-pull`, `--push-pull-snr-within-db 4`.
+
+---
+
+## Gesture label (OSC `/radar/gesture`)
+
+With `push_pull.enabled` and `use_range_derivative_for_doppler`, gesture comes from **range rate** (same value as `/radar/doppler_mps`):
+
+| Value | Condition |
+|-------|-----------|
+| `push` | velocity **>** `gesture.min_velocity_mps` (target moving farther) |
+| `pull` | velocity **<** −`gesture.min_velocity_mps` (target moving closer) |
+| `none` | \|velocity\| below threshold (hold / noise) |
+
+Sign: `doppler_mps = d(range)/dt` after EMA on range. Positive range increasing → `push`; negative → `pull`.
+
+When push/pull is **off**, labels fall back to the RD two-peak heuristic: `none`, `single`, or legacy `push_pull`.
+
+Config (`gesture` block):
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `min_velocity_mps` | `0.15` | Deadband so small motion does not flip push/pull |
+| `min_peak_snr_db` | `5` | Used only when push/pull off |
+| `min_range_sep_m` / `max_range_sep_m` | `0.2` / `1.5` | Used only when push/pull off |
+
+Max: `[route gesture]` → `[select push]` / `[select pull]` on the string.
 
 ---
 
@@ -165,7 +194,7 @@ python3 live_radar_to_max.py --push-pull --push-pull-snr-within-db 4 \
   --background-capture captures/empty_room
 ```
 
-OSC addresses (defaults): `/radar/range_m`, `/radar/doppler_mps`, `/radar/angle_deg`, `/radar/snr_db`, `/radar/presence`, `/radar/mode`.
+OSC addresses (defaults): `/radar/range_m`, `/radar/doppler_mps`, `/radar/angle_deg`, `/radar/snr_db`, `/radar/presence`, `/radar/gesture`, `/radar/mode`.
 
 ### 4b. Replay capture → Max (same processing as live)
 

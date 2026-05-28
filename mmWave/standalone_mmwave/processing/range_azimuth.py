@@ -1,103 +1,203 @@
-"""Range–azimuth maps via FFT or MUSIC on virtual-antenna snapshots."""
+"""Range–azimuth maps: per-range Doppler peak + antenna FFT (same FFT as ``target_detect``)."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Iterable, Literal
 
 import numpy as np
 
 from capture_store import CaptureSession
+from processing.angle_estimate import angle_axis_deg, angle_spectrum_fft
 from processing.cube import frame_to_radar_cube
 from processing.rda import compute_rda, range_doppler_axes
 
-AngleMethod = Literal["fft", "music"]
 
-
-def angle_axis_deg(n_bins: int, fov_deg: float = 90.0) -> np.ndarray:
-    """Azimuth grid: 0° at center, negative left, positive right."""
-    half = float(fov_deg) / 2.0
-    return np.linspace(-half, half, n_bins, dtype=np.float64)
-
-
-def _steering_vector(n_ant: int, theta_deg: float) -> np.ndarray:
-    """ULA steering vector (λ/2 spacing), broadside = 0°."""
-    theta = np.deg2rad(theta_deg)
-    k = np.arange(n_ant, dtype=np.float64)
-    return np.exp(1j * np.pi * k * np.sin(theta))
-
-
-def fft_azimuth_spectrum(snap: np.ndarray, n_bins: int, fov_deg: float = 90.0) -> np.ndarray:
-    """|FFT|^2 spectrum over azimuth for one antenna snapshot."""
-    spec = np.fft.fftshift(np.fft.fft(snap, n=n_bins))
-    return (np.abs(spec) ** 2).astype(np.float64)
-
-
-def music_azimuth_spectrum(
-    snap: np.ndarray,
-    *,
-    n_bins: int,
-    fov_deg: float = 90.0,
-    n_sources: int = 1,
-) -> np.ndarray:
+def doppler_idx_per_range(rd_roi: np.ndarray) -> np.ndarray:
     """
-    Basic MUSIC pseudo-spectrum (ULA, λ/2).
+    Per range column: Doppler bin with largest SNR (decluttered dB − median).
 
-    n_sources: number of assumed coherent sources (rest → noise subspace).
+    Returns shape (n_range,) indices into the Doppler axis of ``rd_roi``.
     """
-    x = np.asarray(snap, dtype=np.complex128).ravel()
-    n_ant = x.size
-    if n_ant < 2:
-        return np.zeros(n_bins, dtype=np.float64)
-
-    r = np.outer(x, x.conj())
-    eigvals, eigvecs = np.linalg.eigh(r)
-    order = np.argsort(eigvals)
-    eigvecs = eigvecs[:, order]
-    n_noise = max(1, n_ant - int(n_sources))
-    en = eigvecs[:, :n_noise]
-
-    angles = angle_axis_deg(n_bins, fov_deg)
-    out = np.zeros(n_bins, dtype=np.float64)
-    for i, theta in enumerate(angles):
-        a = _steering_vector(n_ant, theta)
-        denom = np.linalg.norm(en.conj().T @ a) ** 2
-        out[i] = 1.0 / (denom + 1e-12)
-    return out
+    noise_floor = float(np.median(rd_roi))
+    snr_map = rd_roi.astype(np.float64) - noise_floor
+    return np.argmax(snr_map, axis=0).astype(np.intp)
 
 
-def azimuth_spectrum(
-    snap: np.ndarray,
+def range_azimuth_power_frame(
+    rda: np.ndarray,
+    rd_db: np.ndarray,
+    range_m: np.ndarray,
+    r_mask: np.ndarray,
+    r_idx: np.ndarray,
     *,
-    method: AngleMethod,
-    n_bins: int,
+    angle_bins: int,
     fov_deg: float = 90.0,
 ) -> np.ndarray:
-    if method == "music":
-        return music_azimuth_spectrum(snap, n_bins=n_bins, fov_deg=fov_deg)
-    return fft_azimuth_spectrum(snap, n_bins=n_bins, fov_deg=fov_deg)
+    """
+    One frame: range × azimuth power (linear).
+
+    At each range bin, pick the strongest Doppler column (per-range SNR peak), then
+    run the same antenna FFT as ``target_detect`` on that (Doppler, range) cell.
+
+    Returns (n_range, n_angle).
+    """
+    del range_m  # axis labels only; indexing uses r_mask / r_idx
+    rd_roi = rd_db[:, r_mask]
+    d_idxs = doppler_idx_per_range(rd_roi)
+    n_range = len(r_idx)
+    power = np.zeros((n_range, int(angle_bins)), dtype=np.float64)
+    for j, ridx in enumerate(r_idx):
+        d_idx = int(d_idxs[j])
+        power[j, :] = angle_spectrum_fft(rda[d_idx, :, ridx], angle_bins, fov_deg)
+    return power
+
+
+def range_azimuth_power_db_frame(
+    rda: np.ndarray,
+    rd_db: np.ndarray,
+    range_m: np.ndarray,
+    r_mask: np.ndarray,
+    r_idx: np.ndarray,
+    *,
+    angle_bins: int,
+    fov_deg: float = 90.0,
+) -> np.ndarray:
+    """``range_azimuth_power_frame`` converted to dB."""
+    power = range_azimuth_power_frame(
+        rda, rd_db, range_m, r_mask, r_idx, angle_bins=angle_bins, fov_deg=fov_deg
+    )
+    return (10.0 * np.log10(power + 1e-12)).astype(np.float64)
+
+
+def collect_range_azimuth_frames(
+    capture_path: Path,
+    *,
+    range_gate_m: tuple[float, float],
+    angle_bins: int = 128,
+    fov_deg: float = 90.0,
+    background_capture: Path | None = None,
+    background_max_frames: int = 0,
+    calibration_frames: int = 45,
+    max_frames: int = 0,
+    show_progress: bool = True,
+) -> tuple[list[np.ndarray], np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Per-frame range–azimuth maps for video export.
+
+    Returns
+    -------
+    frames_db : list of (n_range, n_angle) dB maps
+    range_m, angle_deg, time_s
+    """
+    from background_model import (
+        estimate_rd_background_from_capture,
+        estimate_rda_background_from_capture,
+        frame_rd_power_db,
+    )
+    from post_processing.rd_maps import _frame_times
+
+    session = CaptureSession.open(Path(capture_path))
+    params = session.radar_params()
+    paths = session.frame_paths()
+    if max_frames > 0:
+        paths = paths[:max_frames]
+    if not paths:
+        raise RuntimeError(f"No frames in {capture_path}")
+
+    range_axis, _ = range_doppler_axes(params)
+    r_lo, r_hi = range_gate_m
+    r_mask = (range_axis >= r_lo) & (range_axis <= r_hi)
+    r_idx = np.flatnonzero(r_mask)
+    range_m = range_axis[r_mask]
+    angle_deg = angle_axis_deg(angle_bins, fov_deg)
+
+    rd_raw_list = []
+    rda_list = []
+    for i, p in enumerate(paths):
+        raw = np.load(p)
+        rd_raw_list.append(frame_rd_power_db(raw, params))
+        rda_list.append(compute_rda(frame_to_radar_cube(raw, params)))
+        if show_progress and (i + 1) % 50 == 0:
+            print(f"  loaded {i + 1}/{len(paths)} frames…", flush=True)
+
+    if background_capture is not None:
+        bg = estimate_rd_background_from_capture(
+            Path(background_capture), params, max_frames=background_max_frames
+        )
+        bg_c = estimate_rda_background_from_capture(
+            Path(background_capture), params, max_frames=background_max_frames
+        )
+    else:
+        n_cal = min(len(rd_raw_list), max(1, int(calibration_frames)))
+        bg = np.mean(np.stack(rd_raw_list[:n_cal], axis=0), axis=0)
+        bg_c = np.mean(np.stack(rda_list[:n_cal], axis=0), axis=0)
+
+    bg_ra_db = None
+    if background_capture is not None:
+        bg_session = CaptureSession.open(Path(background_capture))
+        bg_paths = bg_session.frame_paths()
+        if background_max_frames > 0:
+            bg_paths = bg_paths[:background_max_frames]
+        if bg_paths:
+            bg_ra_acc = np.zeros((range_m.size, angle_bins), dtype=np.float64)
+            for p in bg_paths:
+                raw = np.load(p)
+                rda_b = compute_rda(frame_to_radar_cube(raw, params)) - bg_c
+                rd_b = frame_rd_power_db(raw, params) - bg
+                bg_ra_acc += range_azimuth_power_db_frame(
+                    rda_b,
+                    rd_b,
+                    range_m,
+                    r_mask,
+                    r_idx,
+                    angle_bins=angle_bins,
+                    fov_deg=fov_deg,
+                )
+            bg_ra_db = bg_ra_acc / len(bg_paths)
+
+    frames_db: list[np.ndarray] = []
+    for rd_raw, rda in zip(rd_raw_list, rda_list):
+        rd_db = rd_raw - bg
+        rda_d = rda - bg_c
+        ra_db = range_azimuth_power_db_frame(
+            rda_d,
+            rd_db,
+            range_m,
+            r_mask,
+            r_idx,
+            angle_bins=angle_bins,
+            fov_deg=fov_deg,
+        )
+        if bg_ra_db is not None:
+            ra_db = ra_db - bg_ra_db
+        frames_db.append(ra_db)
+
+    time_s = _frame_times(session, len(frames_db))
+    return frames_db, range_m, angle_deg, time_s
 
 
 def build_range_azimuth_map(
     capture_path: Path,
     *,
     range_gate_m: tuple[float, float],
-    method: AngleMethod = "fft",
     angle_bins: int = 128,
     fov_deg: float = 90.0,
     background_capture: Path | None = None,
     background_max_frames: int = 0,
+    calibration_frames: int = 45,
     max_frames: int = 0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Mean range–azimuth power map (dB).
+    Mean range–azimuth power (dB), averaged over frames.
 
-    Returns
-    -------
-    range_m : (n_range,)
-    angle_deg : (n_angle,)  — 0° center, − left, + right
-    power_db : (n_range, n_angle)
+    Per frame and per range: strongest Doppler at that range → antenna FFT (live style).
     """
+    from background_model import (
+        estimate_rd_background_from_capture,
+        estimate_rda_background_from_capture,
+        frame_rd_power_db,
+    )
+
     session = CaptureSession.open(Path(capture_path))
     params = session.radar_params()
     paths = session.frame_paths()
@@ -117,29 +217,49 @@ def build_range_azimuth_map(
     angle_deg = angle_axis_deg(angle_bins, fov_deg)
     n_range = range_m.size
 
-    def _accumulate(paths_in: list[Path]) -> np.ndarray:
-        acc = np.zeros((n_range, angle_bins), dtype=np.float64)
+    def _process(paths_in: list[Path]) -> np.ndarray:
+        rd_raw_list = []
+        rda_list = []
         for p in paths_in:
             raw = np.load(p)
-            cube = frame_to_radar_cube(raw, params)
-            rda = compute_rda(cube)
-            for j, ridx in enumerate(r_idx):
-                ant_vec = np.mean(rda[:, :, ridx], axis=0)
-                spec = azimuth_spectrum(
-                    ant_vec, method=method, n_bins=angle_bins, fov_deg=fov_deg
-                )
-                acc[j, :] += spec
+            rd_raw_list.append(frame_rd_power_db(raw, params))
+            rda_list.append(compute_rda(frame_to_radar_cube(raw, params)))
+
+        if background_capture is not None:
+            bg = estimate_rd_background_from_capture(
+                Path(background_capture), params, max_frames=background_max_frames
+            )
+            bg_c = estimate_rda_background_from_capture(
+                Path(background_capture), params, max_frames=background_max_frames
+            )
+        else:
+            n_cal = min(len(rd_raw_list), max(1, int(calibration_frames)))
+            bg = np.mean(np.stack(rd_raw_list[:n_cal], axis=0), axis=0)
+            bg_c = np.mean(np.stack(rda_list[:n_cal], axis=0), axis=0)
+
+        acc = np.zeros((n_range, angle_bins), dtype=np.float64)
+        for rd_raw, rda in zip(rd_raw_list, rda_list):
+            rd_db = rd_raw - bg
+            rda_d = rda - bg_c
+            acc += range_azimuth_power_frame(
+                rda_d,
+                rd_db,
+                range_m,
+                r_mask,
+                r_idx,
+                angle_bins=angle_bins,
+                fov_deg=fov_deg,
+            )
         return acc / max(len(paths_in), 1)
 
-    power = _accumulate(paths)
-
+    power = _process(paths)
     if background_capture is not None:
         bg_session = CaptureSession.open(Path(background_capture))
         bg_paths = bg_session.frame_paths()
         if background_max_frames > 0:
             bg_paths = bg_paths[:background_max_frames]
         if bg_paths:
-            bg_power = _accumulate(bg_paths)
+            bg_power = _process(bg_paths)
             power = np.maximum(power - bg_power, 1e-12)
 
     power_db = 10.0 * np.log10(power + 1e-12)

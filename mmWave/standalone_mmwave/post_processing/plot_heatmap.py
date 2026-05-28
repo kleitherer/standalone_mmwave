@@ -24,7 +24,9 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from capture_store import CaptureSession
-from processing.range_azimuth import AngleMethod, build_range_azimuth_map
+import json
+
+from processing.range_azimuth import build_range_azimuth_map
 from post_processing.processing_config import ProcessingConfig
 from post_processing.range_gate import estimate_range_gate_for_capture
 from post_processing.rd_maps import RangeTimeVolume, build_range_time_volume
@@ -326,12 +328,6 @@ def parse_args():
         help="Clutter removal method (global_mean only, matches live).",
     )
     p.add_argument("--max-frames", type=int, default=0)
-    p.add_argument(
-        "--angle-method",
-        choices=["fft", "music"],
-        default=None,
-        help="Azimuth estimator: fft or music (default from config angle_estimation.method)",
-    )
     p.add_argument("--angle-bins", type=int, default=None, help="Override config angle_estimation.fft_bins")
     p.add_argument("--angle-fov-deg", type=float, default=None, help="Override config angle_estimation.fov_deg")
     return p.parse_args()
@@ -355,11 +351,15 @@ def main() -> int:
         proc.calibration_frames = args.calibration_frames
     if args.clutter_window is not None:
         proc.calibration_frames = args.clibration_frames
-    angle_method: AngleMethod = (
-        args.angle_method if args.angle_method else proc.angle.method  # type: ignore[assignment]
-    )
     angle_bins = int(args.angle_bins if args.angle_bins is not None else proc.angle.fft_bins)
     angle_fov = float(args.angle_fov_deg if args.angle_fov_deg is not None else proc.angle.fov_deg)
+
+    cfg_path = args.config or (_ROOT / "config" / "live_radar_to_max.json")
+    push_pull_cfg = {}
+    if Path(cfg_path).is_file():
+        push_pull_cfg = json.loads(Path(cfg_path).read_text()).get("push_pull", {})
+    push_pull_mode = bool(push_pull_cfg.get("enabled", False))
+    push_pull_snr_within_db = float(push_pull_cfg.get("snr_within_db_of_max", 3.0))
 
     params = CaptureSession.open(capture).radar_params()
     radar_max = float(params["range_max"])
@@ -377,9 +377,10 @@ def main() -> int:
         clutter_window=proc.calibration_frames,
         background_capture=proc.background.capture,
         background_max_frames=proc.background.max_frames,
-        angle_method=angle_method,
         angle_bins=angle_bins,
         angle_fov_deg=angle_fov,
+        push_pull_mode=push_pull_mode,
+        push_pull_snr_within_db=push_pull_snr_within_db,
         snr_threshold_db=proc.snr_threshold_db,
         max_frames=args.max_frames,
     )
@@ -402,7 +403,7 @@ def main() -> int:
         doppler_time_snr=vol.doppler_time_snr,
         azimuth_time_snr=vol.azimuth_time_snr,
         angle_deg=vol.angle_deg,
-        angle_method=angle_method,
+        angle_time_deg=vol.angle_time_deg,
     )
 
     _plot_volume(vol, out_dir, range_max_m=r_max)
@@ -422,35 +423,34 @@ def main() -> int:
         vol.time_s,
         vol.angle_deg,
         vol.azimuth_time_snr,
-        out_dir / f"azimuth_time_snr_{angle_method}.png",
+        out_dir / "azimuth_time_snr.png",
         x_label="time (s)",
         y_label="azimuth (deg)  [0° = center, − left, + right]",
-        title=f"{vol.session_id} — SNR (dB), max over range ({angle_method.upper()})",
+        title=f"{vol.session_id} — antenna FFT at RD peak (same as live)",
         threshold_db=thr,
         center_line=0.0,
     )
 
-    print(f"Building range–azimuth map ({angle_method.upper()}, {angle_bins} bins, FOV ±{angle_fov/2:.0f}°)…")
+    print(f"Building range–azimuth map ({angle_bins} bins, FOV ±{angle_fov/2:.0f}°, per-range Doppler)…")
     range_m_ra, angle_deg_ra, ra_db = build_range_azimuth_map(
         capture,
         range_gate_m=(r_min, r_max),
-        method=angle_method,
         angle_bins=angle_bins,
         fov_deg=angle_fov,
         background_capture=proc.background.capture,
         background_max_frames=proc.background.max_frames,
+        calibration_frames=proc.calibration_frames,
         max_frames=args.max_frames,
     )
-    ra_png = out_dir / f"range_azimuth_{angle_method}.png"
+    ra_png = out_dir / "range_azimuth.png"
     _plot_range_azimuth(
-        range_m_ra, angle_deg_ra, ra_db, ra_png, method=angle_method, range_max_m=r_max
+        range_m_ra, angle_deg_ra, ra_db, ra_png, method="fft", range_max_m=r_max
     )
     np.savez_compressed(
-        out_dir / f"range_azimuth_{angle_method}.npz",
+        out_dir / "range_azimuth.npz",
         range_m=range_m_ra,
         angle_deg=angle_deg_ra,
         power_db=ra_db,
-        angle_method=angle_method,
         range_min_m=r_min,
         range_max_m=r_max,
     )

@@ -7,8 +7,107 @@ from typing import Dict, Optional, Tuple
 
 import numpy as np
 
+from processing.angle_estimate import angle_deg_at_rd_cell
 from processing.cube import frame_to_radar_cube
 from processing.rda import compute_rda, range_doppler_axes, rda_power_db
+
+GESTURE_NONE = "none"
+GESTURE_SINGLE = "single"
+GESTURE_PUSH = "push"
+GESTURE_PULL = "pull"
+# Legacy alias (two-peak RD detector)
+GESTURE_PUSH_PULL = "push_pull"
+
+
+def rd_roi_snr_map(rd_roi: np.ndarray) -> np.ndarray:
+    """Decluttered SNR (dB): cell power minus ROI median."""
+    noise_floor = float(np.median(rd_roi))
+    return rd_roi.astype(np.float64) - noise_floor
+
+
+def _range_profile_peaks(snr_along_range: np.ndarray, thresh: float) -> list[int]:
+    """Local maxima along range (indices into the range axis)."""
+    peaks: list[int] = []
+    n = int(snr_along_range.size)
+    for i in range(n):
+        v = float(snr_along_range[i])
+        if v < thresh:
+            continue
+        left = float(snr_along_range[i - 1]) if i > 0 else -np.inf
+        right = float(snr_along_range[i + 1]) if i + 1 < n else -np.inf
+        if v >= left and v >= right:
+            peaks.append(i)
+    return peaks
+
+
+def classify_gesture_from_rd(
+    rd_roi: np.ndarray,
+    range_bins_m: np.ndarray,
+    *,
+    snr_within_db_of_max: float = 4.0,
+    min_peak_snr_db: float = 5.0,
+    min_range_sep_m: float = 0.2,
+    max_range_sep_m: float = 1.5,
+) -> str:
+    """
+    Label the current frame's RD pattern.
+
+    Push/pull: two strong reflectors at **similar range** (torso + arms in the same
+    depth band). Collapse Doppler with a per-range max, find local range peaks above
+  ``max_snr - snr_within_db``, and require two peaks separated by
+    ``[min_range_sep_m, max_range_sep_m]``.
+    """
+    snr_map = rd_roi_snr_map(rd_roi)
+    max_snr = float(np.max(snr_map))
+    if max_snr < float(min_peak_snr_db):
+        return GESTURE_NONE
+
+    snr_along_range = np.max(snr_map, axis=0)
+    thresh = max(max_snr - float(snr_within_db_of_max), float(min_peak_snr_db))
+    peaks = _range_profile_peaks(snr_along_range, thresh)
+    if len(peaks) < 2:
+        return GESTURE_SINGLE if peaks else GESTURE_NONE
+
+    ranges = range_bins_m[np.asarray(peaks, dtype=np.intp)]
+    min_sep = float(min_range_sep_m)
+    max_sep = float(max_range_sep_m)
+    for i in range(len(ranges)):
+        for j in range(i + 1, len(ranges)):
+            sep = abs(float(ranges[i]) - float(ranges[j]))
+            if min_sep <= sep <= max_sep:
+                return GESTURE_PUSH_PULL
+    return GESTURE_SINGLE
+
+
+def classify_gesture_from_velocity(
+    velocity_mps: float,
+    *,
+    min_velocity_mps: float = 0.15,
+) -> str:
+    """
+    Push/pull from range rate (d(range)/dt on ``doppler_mps`` when enabled).
+
+    Positive velocity → target moving farther (``push``).
+    Negative velocity → target moving closer (``pull``).
+    """
+    v = float(velocity_mps)
+    thr = float(min_velocity_mps)
+    if v > thr:
+        return GESTURE_PUSH
+    if v < -thr:
+        return GESTURE_PULL
+    return GESTURE_NONE
+
+
+def gesture_settings_kwargs(settings: dict) -> dict[str, float]:
+    """Processor kwargs from ``gesture`` block in live_radar_to_max.json."""
+    gesture_cfg = settings.get("gesture", {})
+    return {
+        "gesture_min_peak_snr_db": float(gesture_cfg.get("min_peak_snr_db", 5.0)),
+        "gesture_min_range_sep_m": float(gesture_cfg.get("min_range_sep_m", 0.2)),
+        "gesture_max_range_sep_m": float(gesture_cfg.get("max_range_sep_m", 1.5)),
+        "gesture_min_velocity_mps": float(gesture_cfg.get("min_velocity_mps", 0.15)),
+    }
 
 
 def pick_rd_peak(
@@ -25,8 +124,7 @@ def pick_rd_peak(
     push_pull_mode: among cells within ``push_pull_snr_within_db`` of max SNR,
     pick the closest range (favors moving arms over a stationary torso).
     """
-    noise_floor = float(np.median(rd_roi))
-    snr_map = rd_roi.astype(np.float64) - noise_floor
+    snr_map = rd_roi_snr_map(rd_roi)
     max_snr = float(np.max(snr_map))
 
     if push_pull_mode:
@@ -58,6 +156,7 @@ class LiveRadarTarget:
     peak_db: float
     energy: float
     presence: float
+    gesture: str = GESTURE_NONE
 
 
 class LiveRadarTargetProcessor:
@@ -77,9 +176,15 @@ class LiveRadarTargetProcessor:
         background_rd_mean: np.ndarray | None = None,
         smooth_alpha: float = 0.2,
         angle_fft_bins: int = 128,
+        angle_fov_deg: float = 90.0,
         presence_threshold_db: float = 12.0,
         push_pull_mode: bool = False,
         push_pull_snr_within_db: float = 3.0,
+        push_pull_use_range_derivative_for_doppler: bool = False,
+        gesture_min_peak_snr_db: float = 5.0,
+        gesture_min_range_sep_m: float = 0.2,
+        gesture_max_range_sep_m: float = 1.5,
+        gesture_min_velocity_mps: float = 0.15,
     ):
         self.params = params
         self.range_gate_m = range_gate_m
@@ -87,9 +192,14 @@ class LiveRadarTargetProcessor:
         self._calibration_frames = max(1, int(clutter_window))
         self._smooth_alpha = float(smooth_alpha)
         self._angle_fft_bins = int(angle_fft_bins)
+        self._angle_fov_deg = float(angle_fov_deg)
         self._presence_threshold_db = float(presence_threshold_db)
         self._push_pull_mode = bool(push_pull_mode)
         self._push_pull_snr_within_db = float(push_pull_snr_within_db)
+        self._gesture_min_peak_snr_db = float(gesture_min_peak_snr_db)
+        self._gesture_min_range_sep_m = float(gesture_min_range_sep_m)
+        self._gesture_max_range_sep_m = float(gesture_max_range_sep_m)
+        self._gesture_min_velocity_mps = float(gesture_min_velocity_mps)
         self._rd_sum: Optional[np.ndarray] = None
         self._rd_mean: Optional[np.ndarray] = (
             np.asarray(background_rd_mean, dtype=np.float64) if background_rd_mean is not None else None
@@ -98,15 +208,6 @@ class LiveRadarTargetProcessor:
         self._smooth: Optional[Tuple[float, float, float]] = None  # range, doppler, angle
 
         self._range_axis, self._doppler_axis = range_doppler_axes(params)
-
-    def _angle_deg(self, rda: np.ndarray, d_idx: int, r_idx: int) -> float:
-        snap = rda[d_idx, :, r_idx]
-        if snap.size < 2:
-            return 0.0
-        spec = np.fft.fftshift(np.fft.fft(snap, n=self._angle_fft_bins))
-        a_idx = int(np.argmax(np.abs(spec)))
-        angles = np.linspace(-90.0, 90.0, self._angle_fft_bins)
-        return float(angles[a_idx])
 
     def update(self, frame_int16: np.ndarray) -> Optional[LiveRadarTarget]:
         cube = frame_to_radar_cube(frame_int16, self.params)
@@ -122,6 +223,7 @@ class LiveRadarTargetProcessor:
                 return None
             self._rd_mean = self._rd_sum / float(self._frames_seen)
             self._rd_sum = None
+            self._prev_range_m = None
 
         rd_db = rd_db - self._rd_mean
 
@@ -143,10 +245,11 @@ class LiveRadarTargetProcessor:
             return None
 
         range_bins_m = self._range_axis[r_mask]
+        use_push_pull_peak = self._push_pull_mode
         d_idx, r_local, peak_db, snr_db = pick_rd_peak(
             rd_roi,
             range_bins_m,
-            push_pull_mode=self._push_pull_mode,
+            push_pull_mode=use_push_pull_peak,
             push_pull_snr_within_db=self._push_pull_snr_within_db,
         )
         r_idx = int(np.flatnonzero(r_mask)[r_local])
@@ -157,7 +260,13 @@ class LiveRadarTargetProcessor:
 
         range_m = float(self._range_axis[r_idx])
         doppler_mps = float(self._doppler_axis[d_idx_full])
-        angle_deg = self._angle_deg(rda, d_idx_full, r_idx)
+        angle_deg = angle_deg_at_rd_cell(
+            rda,
+            d_idx_full,
+            r_idx,
+            n_bins=self._angle_fft_bins,
+            fov_deg=self._angle_fov_deg,
+        )
 
         if self._smooth_alpha > 0.0:
             if self._smooth is None:
@@ -171,6 +280,30 @@ class LiveRadarTargetProcessor:
                     a * angle_deg + (1 - a) * sa,
                 )
             range_m, doppler_mps, angle_deg = self._smooth
+
+        if self._push_pull_use_range_derivative and use_push_pull_peak:
+            if self._prev_range_m is not None:
+                doppler_mps = (range_m - self._prev_range_m) / self._frame_dt_s
+            else:
+                doppler_mps = 0.0
+            self._prev_range_m = range_m
+        elif self._push_pull_use_range_derivative:
+            self._prev_range_m = range_m
+
+        if self._push_pull_mode:
+            gesture = classify_gesture_from_velocity(
+                doppler_mps,
+                min_velocity_mps=self._gesture_min_velocity_mps,
+            )
+        else:
+            gesture = classify_gesture_from_rd(
+                rd_roi,
+                range_bins_m,
+                snr_within_db_of_max=self._push_pull_snr_within_db,
+                min_peak_snr_db=self._gesture_min_peak_snr_db,
+                min_range_sep_m=self._gesture_min_range_sep_m,
+                max_range_sep_m=self._gesture_max_range_sep_m,
+            )
 
         r_lo, r_hi = self.range_gate_m
         r_mask = (self._range_axis >= r_lo) & (self._range_axis <= r_hi)
@@ -187,4 +320,5 @@ class LiveRadarTargetProcessor:
             peak_db=peak_db,
             energy=energy,
             presence=presence,
+            gesture=gesture,
         )

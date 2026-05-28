@@ -112,6 +112,14 @@ for i, raw in session.iter_frames():
 
 Do **not** store only range/Doppler/angle — always keep **raw**; derived maps can be recomputed.
 
+## Signal processing roadmap (FFTs, raw → metrics)
+
+First time reading the processing code:
+
+**[docs/PROCESSING_ROADMAP.md](docs/PROCESSING_ROADMAP.md)**
+
+Covers: where range / Doppler / azimuth FFTs live (`processing/rda.py`, `angle_estimate.py`), how `frame_*.npy` becomes range / velocity / angle / gesture, and a file-by-file map.
+
 ## Push / pull gesture (live, replay, analysis)
 
 Workflow, global-mean clutter, push/pull peak rule, and commands:

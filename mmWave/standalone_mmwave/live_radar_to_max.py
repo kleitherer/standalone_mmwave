@@ -35,7 +35,7 @@ if str(_ROOT) not in sys.path:
 
 from background_model import estimate_rd_background_from_capture
 from processing.osc_utils import build_osc_message
-from processing.target_detect import LiveRadarTargetProcessor
+from processing.target_detect import GESTURE_NONE, LiveRadarTargetProcessor
 from radar_config import RadarConfig
 from radar_receiver import RadarReceiver
 
@@ -118,7 +118,9 @@ def _parse_args() -> argparse.Namespace:
     settings = _load_settings(bootstrap_args.settings)
 
     proc_cfg = settings.get("processing", {})
+    ang_cfg = settings.get("angle_estimation", {})
     push_pull_cfg = settings.get("push_pull", {})
+    gesture_cfg = settings.get("gesture", {})
     net_cfg = settings.get("network", {})
     osc_cfg = settings.get("osc", {})
     device_cfg = settings.get("device", {})
@@ -178,6 +180,12 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--angle-address", default=osc_cfg.get("angle_address", "/radar/angle_deg"))
     p.add_argument("--snr-address", default=osc_cfg.get("snr_address", "/radar/snr_db"))
     p.add_argument("--presence-address", default=osc_cfg.get("presence_address", "/radar/presence"))
+    p.add_argument(
+        "--gesture-address",
+        default=osc_cfg.get("gesture_address", "/radar/gesture"),
+        help="OSC string label: none | push | pull (or single when push/pull off)",
+    )
+    p.add_argument("--no-gesture", action="store_true", help="Do not send /radar/gesture")
     p.add_argument("--mode-address", default=osc_cfg.get("mode_address", "/radar/mode"))
     p.add_argument("--live-mode-text", default=osc_cfg.get("live_mode_text", "Recording Live Data"))
     p.add_argument(
@@ -197,6 +205,36 @@ def _parse_args() -> argparse.Namespace:
         type=float,
         default=float(push_pull_cfg.get("snr_within_db_of_max", 3.0)),
         help="With --push-pull, only consider peaks within this many dB of max SNR",
+    )
+    p.add_argument(
+        "--push-pull-range-derivative",
+        action=argparse.BooleanOptionalAction,
+        default=bool(push_pull_cfg.get("use_range_derivative_for_doppler", False)),
+        help="TEMP: send d(range)/dt on /radar/doppler_mps when push/pull peak rule is active",
+    )
+    p.add_argument(
+        "--gesture-min-peak-snr-db",
+        type=float,
+        default=float(gesture_cfg.get("min_peak_snr_db", 5.0)),
+        help="Minimum global SNR to classify gesture",
+    )
+    p.add_argument(
+        "--gesture-min-range-sep-m",
+        type=float,
+        default=float(gesture_cfg.get("min_range_sep_m", 0.2)),
+        help="Push/pull: min separation between two range peaks (m)",
+    )
+    p.add_argument(
+        "--gesture-max-range-sep-m",
+        type=float,
+        default=float(gesture_cfg.get("max_range_sep_m", 1.5)),
+        help="Push/pull: max separation between two range peaks (m)",
+    )
+    p.add_argument(
+        "--gesture-min-velocity-mps",
+        type=float,
+        default=float(gesture_cfg.get("min_velocity_mps", 0.15)),
+        help="Push/pull: |d(range)/dt| must exceed this for push or pull label",
     )
     p.add_argument(
         "--emit-below-threshold",
@@ -255,6 +293,7 @@ def _parse_args() -> argparse.Namespace:
 def main() -> int:
     args = _parse_args()
     log = lambda msg: print(msg, flush=True)
+    ang_cfg = _load_settings(args.settings).get("angle_estimation", {})
     if args.background_capture:
         args.background_capture = _resolve_capture_path(args.background_capture)
 
@@ -278,6 +317,8 @@ def main() -> int:
             f"  Push/pull: ON — nearest range among peaks within "
             f"{args.push_pull_snr_within_db:.1f} dB of max SNR"
         )
+        if args.push_pull_range_derivative:
+            log("  Push/pull: d(range)/dt → /radar/doppler_mps (temporary)")
     log(f"  Avg:     {max(1, int(args.frame_average_count))} frame(s)")
     if args.duration_sec and args.duration_sec > 0:
         log(f"  Duration:{args.duration_sec:.1f}s (auto-stop)")
@@ -316,9 +357,16 @@ def main() -> int:
         clutter_window=args.calibration_frames,
         background_rd_mean=background_rd_mean,
         smooth_alpha=args.smooth_alpha,
+        angle_fft_bins=int(ang_cfg.get("fft_bins", 128)),
+        angle_fov_deg=float(ang_cfg.get("fov_deg", 90.0)),
         presence_threshold_db=args.presence_threshold_db,
         push_pull_mode=args.push_pull,
         push_pull_snr_within_db=args.push_pull_snr_within_db,
+        push_pull_use_range_derivative_for_doppler=args.push_pull_range_derivative,
+        gesture_min_peak_snr_db=args.gesture_min_peak_snr_db,
+        gesture_min_range_sep_m=args.gesture_min_range_sep_m,
+        gesture_max_range_sep_m=args.gesture_max_range_sep_m,
+        gesture_min_velocity_mps=args.gesture_min_velocity_mps,
     )
     osc = OscSender(args.osc_host, args.osc_port)
     osc.send_text(args.mode_address, args.live_mode_text)
@@ -439,6 +487,8 @@ def main() -> int:
 
             if (not args.emit_below_threshold) and est.snr_db < args.presence_threshold_db:
                 osc.send(args.presence_address, 0.0)
+                if not args.no_gesture and args.gesture_address:
+                    osc.send_text(args.gesture_address, GESTURE_NONE)
                 continue
 
             osc.send(args.range_address, est.range_m)
@@ -449,6 +499,8 @@ def main() -> int:
             if not args.no_snr:
                 osc.send(args.snr_address, est.snr_db)
             osc.send(args.presence_address, est.presence)
+            if not args.no_gesture and args.gesture_address:
+                osc.send_text(args.gesture_address, est.gesture)
 
             if args.bundle_address:
                 osc.send_bundle(
@@ -468,7 +520,8 @@ def main() -> int:
                 log(
                     f"  {elapsed:5.1f}s  osc={sent} ({rate:.1f}/s)  "
                     f"R={est.range_m:.2f}m  V={est.doppler_mps:+.2f}m/s  "
-                    f"A={est.angle_deg:+.1f}°  SNR={est.snr_db:.1f}dB"
+                    f"A={est.angle_deg:+.1f}°  SNR={est.snr_db:.1f}dB  "
+                    f"gesture={est.gesture}"
                 )
                 last_status = now
 

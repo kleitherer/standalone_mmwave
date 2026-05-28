@@ -20,7 +20,14 @@
   },
   "push_pull": {
     "enabled": true,
-    "snr_within_db_of_max": 4.0
+    "snr_within_db_of_max": 4.0,
+    "use_range_derivative_for_doppler": true
+  },
+  "gesture": {
+    "min_peak_snr_db": 5.0,
+    "min_range_sep_m": 0.2,
+    "max_range_sep_m": 1.5,
+    "min_velocity_mps": 0.15
   },
   "run": {
     "duration_sec": null
@@ -48,6 +55,7 @@
     "doppler_address": "/radar/doppler_mps",
     "angle_address": "/radar/angle_deg",
     "snr_address": "/radar/snr_db",
-    "presence_address": "/radar/presence"
+    "presence_address": "/radar/presence",
+    "gesture_address": "/radar/gesture"
   }
 }

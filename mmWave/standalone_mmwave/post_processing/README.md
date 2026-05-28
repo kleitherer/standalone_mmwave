@@ -3,6 +3,17 @@
 This repo now keeps only the heatmap path for offline analysis.
 By default it reads processing values from `config/live_radar_to_max.json`.
 
+## Range–azimuth movie (per frame)
+
+```bash
+python3 -m post_processing.plot_range_azimuth_movie --capture captures/push_pull
+python3 -m post_processing.plot_range_azimuth_movie --capture push_pull --angle-bins 1024 --format mp4
+```
+
+Output: `<capture>/analysis/range_azimuth_movie.mp4` (or `.gif` without ffmpeg).
+
+Same processing as the static `range_azimuth.png`: per range bin, pick strongest Doppler then antenna FFT (live-style).
+
 ## Range-time SNR heatmap
 
 ```bash

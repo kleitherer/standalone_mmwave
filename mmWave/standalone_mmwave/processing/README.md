@@ -1,23 +1,25 @@
 # Radar processing
 
-Turn **DCA UDP captures** (`.npy` frames from `radar_receiver.py`) into a **radar cube** and **range–Doppler** maps.
+Turn **DCA UDP captures** (`.npy` frames) into a **radar cube**, **range–Doppler** maps, and (via `target_detect.py`) live **range / velocity / angle / gesture**.
 
-## Data path (your setup)
+**New here?** Read the full pipeline roadmap: **[../docs/PROCESSING_ROADMAP.md](../docs/PROCESSING_ROADMAP.md)** (where FFTs run, raw → OSC, file map).
+
+## FFT summary
+
+| FFT | File | Purpose |
+|-----|------|---------|
+| Range + Doppler | `rda.py` → `compute_rda()` | fast-time → range; slow-time → velocity |
+| Azimuth | `angle_estimate.py` | virtual antennas → angle at RD peak |
+
+## Data path
 
 ```text
-UDP packets → FrameBuffer → frame_*.npy (int16)
-         → fix_byte_order + IQ de-interleave (lvds.py, cube.py)
-         → radar_cube (n_slow, n_ant, n_samples) complex
-         → FFT (rda.py) → RD power (dB)
+frame_*.npy (int16) → cube.py → radar_cube
+  → rda.py (2× FFT) → RD dB → background subtract → target_detect.py
+  → angle FFT → range_m, doppler_mps, angle_deg, gesture
 ```
 
-This matches **`multimodal-ros/sensors/sensors/dsp.py`** for raw LVDS streaming.
-
-## Not the same as `pipeline_utils.radarDataLoader`
-
-`pipeline_utils.py` on your Desktop uses `DCA1000.decode_data()` on **HSI-header UART streams** in `.npz` files. Your Mac captures are **raw DCA Ethernet** frames — use this `processing/` package instead.
-
-You can still reuse ideas from `pipeline_utils.RD()` / `apply_fft()` once you have `radar_cube` with shape `(n_frames, n_slow, n_ant, n_range)`.
+Matches **`multimodal-ros/sensors/dsp.py`** for DCA LVDS captures (not Desktop `pipeline_utils` UART `.npz` format).
 
 ## Usage
 
@@ -54,32 +56,13 @@ Output: `processed.npz` with `radar_cubes`, `rd_power_db`, `range_axis`, `dopple
 
 | File | Role |
 |------|------|
-| `lvds.py` | `fix_byte_order` from `radar_capture_utils` |
-| `cube.py` | int16 frame → complex cube (`dsp._reshape_frame`) |
-| `rda.py` | Range + Doppler FFT, axes from `radar_params` |
-| `process_capture.py` | CLI |
+| `lvds.py` | Byte order fix for DCA payload |
+| `cube.py` | int16 frame → complex radar cube |
+| `rda.py` | **Range + Doppler FFT**, `rda_power_db` |
+| `angle_estimate.py` | **Antenna FFT** → azimuth |
+| `target_detect.py` | Peak pick, SNR, gesture, live `LiveRadarTargetProcessor` |
+| `range_azimuth.py` | Offline range–azimuth maps (per-range Doppler + antenna FFT) |
+| `osc_utils.py` | OSC message bytes for Max |
+| `process_capture.py` | Batch CLI → `processed.npz` |
 
-Optional: `pip install matplotlib` for `--plot`.
-
-## Live stream to Max
-
-Same OSC pattern as `bosch_UWB/standalone_uwb/live_radar_to_max.py`:
-
-```bash
-python3 live_radar_to_max.py \
-  --cfg ../multimodal-ros/xwr_raw_ros/configs/6843isk/xwr68xx_3Tx_wfv0.5_RDAhigh_19.2m.cfg \
-  --cmd-tty /dev/cu.usbserial-00D832110 \
-  --roi-min 0.5 --roi-max 10
-```
-
-OSC messages (float each):
-
-| Address | Value |
-|---------|--------|
-| `/radar/range_m` | meters |
-| `/radar/doppler_mps` | m/s |
-| `/radar/angle_deg` | degrees (FFT on virtual antennas) |
-| `/radar/snr_db` | peak − median in RD ROI |
-| `/radar/presence` | 1 if SNR above threshold |
-
-Max: `[udpreceive 9000]` → `[OSC-route /radar]` → `[route range_m doppler_mps angle_deg snr_db presence]`
+Live/replay OSC: `../live_radar_to_max.py`, `../replay_capture_to_max.py` — see [../docs/push_pull.md](../docs/push_pull.md).

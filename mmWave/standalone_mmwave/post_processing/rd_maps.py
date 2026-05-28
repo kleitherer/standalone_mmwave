@@ -17,7 +17,12 @@ from background_model import (
 )
 from processing.cube import frame_to_radar_cube
 from processing.rda import compute_rda, range_doppler_axes
-from processing.range_azimuth import angle_axis_deg, azimuth_spectrum
+from processing.angle_estimate import (
+    angle_axis_deg,
+    angle_deg_at_rd_cell,
+    angle_spectrum_fft,
+)
+from processing.target_detect import pick_rd_peak
 
 
 @dataclass
@@ -34,7 +39,8 @@ class RangeTimeVolume:
     rd_raw_stack: np.ndarray  # (n_frames, n_doppler, n_range) raw RD power (dB)
     rd_declutter_stack: np.ndarray  # (n_frames, n_doppler, n_range) decluttered RD power (dB)
     doppler_time_snr: np.ndarray  # (n_frames, n_doppler) — max over range
-    azimuth_time_snr: np.ndarray  # (n_frames, n_angle) — max over range
+    azimuth_time_snr: np.ndarray  # (n_frames, n_angle) — antenna FFT at RD peak cell
+    angle_time_deg: np.ndarray  # (n_frames,) — peak angle (same as live target)
     angle_deg: np.ndarray
     session_id: str
     snr_threshold_db: float
@@ -68,9 +74,10 @@ def build_range_time_volume(
     clutter_window: int = 16,
     background_capture: Path | None = None,
     background_max_frames: int = 0,
-    angle_method: str = "fft",
     angle_bins: int = 128,
     angle_fov_deg: float = 90.0,
+    push_pull_mode: bool = False,
+    push_pull_snr_within_db: float = 3.0,
     snr_threshold_db: float = 8.0,
     max_frames: int = 0,
     show_progress: bool = True,
@@ -102,9 +109,9 @@ def build_range_time_volume(
     raw_rt_list = []
     declutter_rt_list = []
     azimuth_time_list = []
+    angle_time_list = []
 
     angle_deg = angle_axis_deg(angle_bins, angle_fov_deg)
-    r_idx = np.flatnonzero(r_mask)
 
     for i, path in enumerate(paths):
         raw = np.load(path)
@@ -144,16 +151,22 @@ def build_range_time_volume(
         rd_declutter_roi_list.append(rd_roi_declutter)
         rd_list.append(snr)
 
-        az_max = np.full(angle_bins, -np.inf, dtype=np.float64)
-        for ridx in r_idx:
-            ant_vec = np.mean(rda_d[:, :, ridx], axis=0)
-            spec = azimuth_spectrum(
-                ant_vec, method=angle_method, n_bins=angle_bins, fov_deg=angle_fov_deg
+        d_idx, r_local, _, _ = pick_rd_peak(
+            rd_roi_declutter,
+            range_m,
+            push_pull_mode=push_pull_mode,
+            push_pull_snr_within_db=push_pull_snr_within_db,
+        )
+        r_idx_peak = int(np.flatnonzero(r_mask)[r_local])
+        snap = rda_d[d_idx, :, r_idx_peak]
+        spec = angle_spectrum_fft(snap, angle_bins, angle_fov_deg)
+        spec_db = 10.0 * np.log10(spec + 1e-12)
+        azimuth_time_list.append(spec_db - float(np.median(spec_db)))
+        angle_time_list.append(
+            angle_deg_at_rd_cell(
+                rda_d, d_idx, r_idx_peak, n_bins=angle_bins, fov_deg=angle_fov_deg
             )
-            spec_db = 10.0 * np.log10(spec + 1e-12)
-            snr_a = spec_db - float(np.median(spec_db))
-            az_max = np.maximum(az_max, snr_a)
-        azimuth_time_list.append(az_max)
+        )
 
     snr_rt = np.stack(rt_list, axis=0)
     raw_rt = np.stack(raw_rt_list, axis=0)
@@ -163,6 +176,7 @@ def build_range_time_volume(
     rd_declutter_stack = np.stack(rd_declutter_roi_list, axis=0)
     doppler_time_snr = np.max(rd_stack, axis=2)
     azimuth_time_snr = np.stack(azimuth_time_list, axis=0)
+    angle_time_deg = np.asarray(angle_time_list, dtype=np.float64)
     time_s = _frame_times(session, snr_rt.shape[0])
 
     session_id = session.root.name
@@ -178,6 +192,7 @@ def build_range_time_volume(
         rd_declutter_stack=rd_declutter_stack,
         doppler_time_snr=doppler_time_snr,
         azimuth_time_snr=azimuth_time_snr,
+        angle_time_deg=angle_time_deg,
         angle_deg=angle_deg,
         session_id=session_id,
         snr_threshold_db=snr_threshold_db,
