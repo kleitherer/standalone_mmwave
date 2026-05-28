@@ -1,0 +1,53 @@
+{
+  "device": {
+    "radar_cfg": "../multimodal-ros/xwr_raw_ros/configs/6843isk/xwr68xx_3Tx_wfv0.5_RDAhigh_19.2m.cfg",
+    "cmd_tty": "/dev/cu.usbserial-00D832110"
+  },
+  "network": {
+    "dca_ip": "192.168.33.180",
+    "host_data_port": 4098,
+    "osc_host": "127.0.0.1",
+    "osc_port": 9000,
+    "packet_timeout_sec": 5.0
+  },
+  "processing": {
+    "roi_min_m": 0.0,
+    "roi_max_m": 3.0,
+    "presence_threshold_db": 0.0,
+    "calibration_frames": 45,
+    "frame_average_count": 10,
+    "smooth_alpha": 0.2
+  },
+  "push_pull": {
+    "enabled": true,
+    "snr_within_db_of_max": 4.0
+  },
+  "run": {
+    "duration_sec": null
+  },
+  "capture": {
+    "enabled": true,
+    "base_dir": "captures",
+    "name": "dance_dance",
+    "save_raw_frames": true
+  },
+  "background": {
+    "capture": null,
+    "max_frames": 0
+  },
+  "angle_estimation": {
+    "method": "fft",
+    "fft_bins": 128,
+    "fov_deg": 90
+  },
+  "osc": {
+    "mode_address": "/radar/mode",
+    "live_mode_text": "Recording Live Data",
+    "replay_mode_text": "Re-running Previous Capture",
+    "range_address": "/radar/range_m",
+    "doppler_address": "/radar/doppler_mps",
+    "angle_address": "/radar/angle_deg",
+    "snr_address": "/radar/snr_db",
+    "presence_address": "/radar/presence"
+  }
+}

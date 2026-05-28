@@ -112,6 +112,21 @@ for i, raw in session.iter_frames():
 
 Do **not** store only range/Doppler/angle — always keep **raw**; derived maps can be recomputed.
 
+## Push / pull gesture (live, replay, analysis)
+
+Workflow, global-mean clutter, push/pull peak rule, and commands:
+
+**[docs/push_pull.md](docs/push_pull.md)**
+
+## Live stream → Max (OSC)
+
+```bash
+python3 live_radar_to_max.py
+python3 replay_capture_to_max.py --capture push_pull
+```
+
+Settings: `config/live_radar_to_max.json`. Max: `[udpreceive 9000]` → `[OSC-route /radar]`.
+
 ## Run (live stream)
 
 Copy a `.cfg` from the old repo, e.g.:

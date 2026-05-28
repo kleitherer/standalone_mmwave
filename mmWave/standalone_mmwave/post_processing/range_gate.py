@@ -7,7 +7,7 @@ from typing import Dict, Tuple
 
 import numpy as np
 
-from post_processing.gesture_config import BackgroundConfig, GestureProcessingConfig
+from post_processing.processing_config import BackgroundConfig, ProcessingConfig
 from post_processing.rd_maps import build_range_time_volume
 
 
@@ -69,7 +69,7 @@ def estimate_max_range_m(
 
 def estimate_range_gate_for_capture(
     gesture_capture: Path,
-    proc_cfg: GestureProcessingConfig,
+    proc_cfg: ProcessingConfig,
     *,
     radar_max_range_m: float,
     show_progress: bool = False,
@@ -89,7 +89,7 @@ def estimate_range_gate_for_capture(
     vol = build_range_time_volume(
         bg_path,
         range_gate_m=(proc_cfg.range_min_m, radar_max_range_m),
-        clutter_window=proc_cfg.clutter_window_frames,
+        clutter_window=proc_cfg.calibration_frames,
         snr_threshold_db=proc_cfg.snr_threshold_db,
         max_frames=n_bg if not bg.capture else 0,
         show_progress=show_progress,
@@ -97,7 +97,7 @@ def estimate_range_gate_for_capture(
 
     profile = range_profile_from_volume(vol.snr_db)
     est_max, est_info = estimate_max_range_m(vol.range_m, profile, bg)
-    from post_processing.gesture_config import resolve_range_gate
+    from post_processing.processing_config import resolve_range_gate
 
     r_min, r_max = resolve_range_gate(proc_cfg, estimated_max_m=est_max)
 

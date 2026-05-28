@@ -1,6 +1,6 @@
 {
   "snr_threshold_db": 8.0,
-  "clutter_window_frames": 16,
+  "calibration_frames": 16,
   "range_gate": {
     "min_m": 0.25,
     "max_m": 6.0,
