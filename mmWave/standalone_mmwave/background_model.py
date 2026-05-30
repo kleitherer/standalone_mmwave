@@ -9,12 +9,27 @@ import numpy as np
 
 from capture_store import CaptureSession
 from processing.cube import frame_to_radar_cube
-from processing.rda import compute_rda, rda_power_db
+from processing.rda import compute_rda
+from processing.rd_map import frame_to_rd_power_db
 
 
-def frame_rd_power_db(frame_int16: np.ndarray, params: Dict) -> np.ndarray:
-    cube = frame_to_radar_cube(frame_int16, params)
-    return rda_power_db(compute_rda(cube))
+def frame_rd_power_db(
+    frame_int16: np.ndarray,
+    params: Dict,
+    *,
+    n_doppler_fft: int | None = None,
+    n_range_fft: int | None = None,
+    limiter: bool = False,
+) -> np.ndarray:
+    return frame_to_rd_power_db(
+        frame_int16,
+        params,
+        declutter=True,
+        window=True,
+        n_doppler_fft=n_doppler_fft,
+        n_range_fft=n_range_fft,
+        limiter=limiter,
+    )
 
 
 def estimate_rd_background_mean(
@@ -22,11 +37,18 @@ def estimate_rd_background_mean(
     params: Dict,
     *,
     max_frames: int = 0,
+    n_doppler_fft: int | None = None,
+    n_range_fft: int | None = None,
 ) -> np.ndarray:
     acc = None
     n = 0
     for frame in frame_iter:
-        rd = frame_rd_power_db(frame, params).astype(np.float64)
+        rd = frame_rd_power_db(
+            frame,
+            params,
+            n_doppler_fft=n_doppler_fft,
+            n_range_fft=n_range_fft,
+        ).astype(np.float64)
         if acc is None:
             acc = np.zeros_like(rd, dtype=np.float64)
         acc += rd
@@ -43,6 +65,8 @@ def estimate_rd_background_from_capture(
     params: Dict,
     *,
     max_frames: int = 0,
+    n_doppler_fft: int | None = None,
+    n_range_fft: int | None = None,
 ) -> np.ndarray:
     session = CaptureSession.open(Path(capture_path))
     paths = session.frame_paths()
@@ -51,7 +75,13 @@ def estimate_rd_background_from_capture(
     if not paths:
         raise RuntimeError(f"No frames found in background capture: {capture_path}")
     frames = (np.load(p) for p in paths)
-    return estimate_rd_background_mean(frames, params, max_frames=0)
+    return estimate_rd_background_mean(
+        frames,
+        params,
+        max_frames=0,
+        n_doppler_fft=n_doppler_fft,
+        n_range_fft=n_range_fft,
+    )
 
 
 def estimate_rda_background_from_capture(

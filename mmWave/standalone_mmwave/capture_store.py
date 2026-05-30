@@ -192,14 +192,37 @@ class CaptureSession:
 
     def radar_params(self) -> Dict[str, Any]:
         meta = json.loads((self.root / "metadata.json").read_text())
-        return meta["radar_params"]
+        params = dict(meta["radar_params"])
+        cfg_path = self.profile_cfg_path()
+        if cfg_path.is_file():
+            from radar_config import RadarConfig
+
+            fresh = RadarConfig(cfg_path.read_text().splitlines()).get_params()
+            for key in (
+                "n_slow",
+                "chirp_period_same_tx_s",
+                "chirp_time_us",
+                "chirp_time",
+                "velocity_max",
+                "velocity_res",
+            ):
+                if key in fresh:
+                    params[key] = fresh[key]
+        return params
 
     def profile_cfg_path(self) -> Path:
         p = self.root / "profile.cfg"
         if p.is_file():
             return p
         meta = json.loads((self.root / "metadata.json").read_text())
-        return Path(meta["cfg"])
+        for key in ("cfg", "radar_cfg", "source_cfg"):
+            if key in meta and meta[key]:
+                candidate = Path(meta[key])
+                if candidate.is_file():
+                    return candidate
+        if "profile_cfg" in meta:
+            return self.root / meta["profile_cfg"]
+        raise FileNotFoundError(f"No profile.cfg or radar_cfg in {self.root}")
 
     def iter_frames(self) -> Iterator[Tuple[int, np.ndarray]]:
         raw = self.raw_dir if self.raw_dir.is_dir() else self.root

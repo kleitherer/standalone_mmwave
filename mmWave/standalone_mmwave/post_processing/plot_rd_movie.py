@@ -68,7 +68,15 @@ def main() -> int:
         print("Nothing to write (set write_rd_movie or rd_snapshot_frame in config)")
         return 0
 
-    print(f"  rd_display: {pp.rd_display}")
+    print(f"  rd_display: {pp.rd_display}  pipeline: {pp.rd_pipeline}")
+    if pp.rd_pipeline != "mmw":
+        n_doppler_fft, n_range_fft = pp.rd_fft_sizes(params)
+        n_slow = int(params.get("n_slow", params["n_chirps"] // params["n_tx"]))
+        if n_doppler_fft or n_range_fft:
+            print(
+                f"  RD display FFT: Doppler {n_doppler_fft or n_slow} bins "
+                f"(native {n_slow}), range {n_range_fft or int(params['n_samples'])} bins"
+            )
     out_path = write_rd_outputs(capture, proc, out_dir, max_frames=args.max_frames)
     if out_path is not None:
         print(f"Done: {out_path.resolve()}")

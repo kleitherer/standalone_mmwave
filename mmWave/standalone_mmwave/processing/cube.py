@@ -8,8 +8,6 @@ from typing import Any, Dict, Tuple
 
 import numpy as np
 
-from processing.lvds import fix_byte_order
-
 
 def load_capture_metadata(capture_dir: Path) -> Dict[str, Any]:
     meta_path = Path(capture_dir) / "metadata.json"
@@ -49,6 +47,10 @@ def frame_to_radar_cube(
         Shape ``(n_chirps // n_tx, n_rx * n_tx, n_samples)`` — slow-time × virtual
         antennas × range samples. For 3 TX / 4 RX / 96 chirps / 256 samples:
         ``(32, 12, 256)``.
+
+        Slow-time index ``s`` and virtual antenna ``v = tx * n_rx + rx`` hold
+        ``adc[tx + s * n_tx, rx, :]`` — one chirp per TX per slot, so Doppler FFT
+        on axis 0 is over same-TX chirps only (TDM decimation is implicit in layout).
     """
     data = np.asarray(frame, dtype=np.int16).ravel()
     n_chirps = int(params["n_chirps"])
@@ -63,11 +65,12 @@ def frame_to_radar_cube(
     if adc_output_fmt <= 0:
         return data.reshape(n_chirps // n_tx, n_rx * n_tx, n_samples).astype(np.complex64)
 
-    # LVDS uint16 reorder then IQ de-interleave (same as dsp.py)
-    u16 = fix_byte_order(data)
-    iq = np.zeros(u16.size // 2, dtype=np.complex64)
-    iq[0::2] = 1j * u16[0::4] + u16[2::4]
-    iq[1::2] = 1j * u16[1::4] + u16[3::4]
+    # Signed int16, no word reorder — exactly multimodal-ros dsp.py _reshape_frame.
+    # (fix_byte_order + uint16 belong to the mmw HSI-header stream, not raw DCA frames.)
+    sig = data.astype(np.float32)
+    iq = np.zeros(sig.size // 2, dtype=np.complex64)
+    iq[0::2] = 1j * sig[0::4] + sig[2::4]
+    iq[1::2] = 1j * sig[1::4] + sig[3::4]
     cube = iq.reshape(n_chirps, n_rx, n_samples)
 
     if "xWR68xx" in platform and flip_aop_phase:

@@ -10,6 +10,7 @@ from typing import Any, Optional, Tuple
 _DEFAULT = Path(__file__).resolve().parents[1] / "config" / "live_radar_to_max.json"
 
 _RD_DISPLAY_CHOICES = frozenset({"raw_power", "decluttered", "snr"})
+_RD_PIPELINE_CHOICES = frozenset({"mmw", "standalone"})
 
 
 @dataclass
@@ -48,10 +49,29 @@ class PostProcessingConfig:
     movie_fps: float
     percentile_color_scale: bool
     movie_dpi: int
+    rd_doppler_fft_bins: int  # 0 = native; e.g. 256 for display interpolation
+    rd_range_fft_bins: int  # 0 = native (256 samples); e.g. 512 for finer range display
+    rd_vmin_db: float  # fixed color scale (mmw default 25 * 1.8 = 45)
+    rd_vmax_db: float  # fixed color scale (mmw default 40 * 2 = 80)
+    rd_display_upsample: int  # bilinear upsample of RD grid before imshow (1 = off)
+    rd_interpolation: str  # matplotlib imshow interpolation (bilinear recommended)
+    rd_pipeline: str  # mmw | standalone — mmw matches rd_heatmap.py exactly
+    rd_full_range: bool  # mmw style: plot 0..range_max (ignore ROI for RD heatmap)
+    range_time_limiter: bool  # 1-bit limiter for range-time SNR display only (clean single-target track)
 
     @property
     def use_snr(self) -> bool:
         return self.rd_display == "snr"
+
+    def rd_fft_sizes(self, params: dict[str, Any]) -> tuple[int | None, int | None]:
+        """Display-only zero-pad lengths (None = native, no upsampling)."""
+        if self.rd_pipeline == "mmw":
+            return None, None
+        n_slow = int(params.get("n_slow", int(params["n_chirps"]) // int(params["n_tx"])))
+        n_samples = int(params["n_samples"])
+        n_doppler = self.rd_doppler_fft_bins if self.rd_doppler_fft_bins > n_slow else None
+        n_range = self.rd_range_fft_bins if self.rd_range_fft_bins > n_samples else None
+        return n_doppler, n_range
 
     def effective_subtract_background(self, *, background_capture: Path | None) -> bool:
         if background_capture is not None:
@@ -123,6 +143,11 @@ class ProcessingConfig:
             raise ValueError(
                 f"post_processing.rd_display must be one of {sorted(_RD_DISPLAY_CHOICES)}, got {rd_display!r}"
             )
+        rd_pipeline = str(pp.get("rd_pipeline", "mmw")).lower()
+        if rd_pipeline not in _RD_PIPELINE_CHOICES:
+            raise ValueError(
+                f"post_processing.rd_pipeline must be one of {sorted(_RD_PIPELINE_CHOICES)}, got {rd_pipeline!r}"
+            )
 
         return cls(
             config_path=path.resolve(),
@@ -158,6 +183,15 @@ class ProcessingConfig:
                 movie_fps=float(pp.get("movie_fps", 0.0)),
                 percentile_color_scale=bool(pp.get("percentile_color_scale", True)),
                 movie_dpi=int(pp.get("movie_dpi", 100)),
+                rd_doppler_fft_bins=int(pp.get("rd_doppler_fft_bins", 256)),
+                rd_range_fft_bins=int(pp.get("rd_range_fft_bins", 0)),
+                rd_vmin_db=float(pp.get("rd_vmin_db", 25.0 * 1.8)),
+                rd_vmax_db=float(pp.get("rd_vmax_db", 40.0 * 2.0)),
+                rd_display_upsample=max(1, int(pp.get("rd_display_upsample", 1))),
+                rd_interpolation=str(pp.get("rd_interpolation", "bilinear")),
+                rd_pipeline=rd_pipeline,
+                rd_full_range=bool(pp.get("rd_full_range", True)),
+                range_time_limiter=bool(pp.get("range_time_limiter", False)),
             ),
         )
 

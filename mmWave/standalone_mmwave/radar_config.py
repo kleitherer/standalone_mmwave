@@ -122,9 +122,13 @@ class RadarConfig(OrderedDict):
         rx_phase_bias = self["compRangeBiasAndRxChanPhase"][1:]
 
         operating_freq = self["profileCfg"][0][1]
-        chirp_time = self["profileCfg"][0][2] + self["profileCfg"][0][4]
-        velocity_max = (3e8 / (operating_freq * 1e9)) / (4 * (chirp_time * 1e-6))
-        velocity_res = velocity_max / n_chirps
+        chirp_time_us = self["profileCfg"][0][2] + self["profileCfg"][0][4]
+        n_slow = n_chirps // n_tx
+        # TDM: consecutive chirps from the same TX are n_tx chirp periods apart.
+        chirp_period_same_tx_s = n_tx * chirp_time_us * 1e-6
+        wavelength = 3e8 / (operating_freq * 1e9)
+        velocity_max = wavelength / (4.0 * chirp_period_same_tx_s)
+        velocity_res = (2.0 * velocity_max) / float(n_slow)
 
         chirp_slope = self["profileCfg"][0][7] * 1e12
         sample_rate = self["profileCfg"][0][10] * 1e3
@@ -139,6 +143,7 @@ class RadarConfig(OrderedDict):
                 ("range_bias", range_bias),
                 ("rx_phase_bias", rx_phase_bias),
                 ("n_chirps", n_chirps),
+                ("n_slow", n_slow),
                 ("rx", rx),
                 ("n_rx", n_rx),
                 ("tx", tx),
@@ -146,7 +151,10 @@ class RadarConfig(OrderedDict):
                 ("n_samples", n_samples),
                 ("frame_size", frame_size),
                 ("frame_time", frame_time),
-                ("chirp_time", chirp_time),
+                ("operating_freq_ghz", operating_freq),
+                ("chirp_time_us", chirp_time_us),
+                ("chirp_time", chirp_time_us),
+                ("chirp_period_same_tx_s", chirp_period_same_tx_s),
                 ("chirp_slope", chirp_slope),
                 ("sample_rate", sample_rate),
                 ("velocity_max", velocity_max),

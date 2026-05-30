@@ -11,25 +11,34 @@
     "packet_timeout_sec": 5.0
   },
   "processing": {
-    "roi_min_m": 0.0,
+    "roi_min_m": 0.3,
     "roi_max_m": 3.8,
-    "presence_threshold_db": 0.0,
+    "presence_threshold_db": 5.0,
     "calibration_frames": 0,
     "declutter_mean_frames": 45,
     "frame_average_count": 10,
     "smooth_alpha": 0.2
   },
   "post_processing": {
+    "rd_pipeline": "standalone",
+    "rd_full_range": false,
     "rd_display": "raw_power",
     "subtract_background": false,
     "auto_range_gate": false,
     "write_range_time_snr": true,
+    "range_time_limiter": true,
     "write_rd_movie": true,
-    "rd_snapshot_frame": null,
+    "rd_snapshot_frame": 495,
     "movie_format": "mp4",
     "movie_fps": 0,
     "percentile_color_scale": true,
-    "movie_dpi": 100
+    "rd_vmin_db": 45,
+    "rd_vmax_db": 140,
+    "movie_dpi": 120,
+    "rd_doppler_fft_bins": 256,
+    "rd_range_fft_bins": 512,
+    "rd_display_upsample": 2,
+    "rd_interpolation": "bilinear"
   },
   "push_pull": {
     "enabled": true,
@@ -43,7 +52,7 @@
     "min_velocity_mps": 0.15
   },
   "run": {
-    "duration_sec": 10
+    "duration_sec": 30
   },
   "capture": {
     "enabled": true,
@@ -57,8 +66,8 @@
   },
   "angle_estimation": {
     "method": "fft",
-    "fft_bins": 128,
-    "fov_deg": 90
+    "fft_bins": 1024,
+    "fov_deg": 60
   },
   "osc": {
     "mode_address": "/radar/mode",

@@ -81,11 +81,17 @@ def build_range_time_volume(
     snr_threshold_db: float = 8.0,
     max_frames: int = 0,
     show_progress: bool = True,
+    limiter: bool = False,
 ) -> RangeTimeVolume:
     """
     Stack per-frame range–Doppler SNR into a range–time image.
 
     Each time slice: SNR(d,r) = RD_power(d,r) - noise, then max over Doppler → SNR(r).
+
+    ``limiter`` applies a 1-bit hard limiter to the range–time RD power only
+    (display enhancement for single-target tracking — see
+    ``processing.adc_cube.hard_limiter``). The complex RDA used for angle/azimuth
+    is always computed from the faithful (non-limited) decode.
     """
     session = CaptureSession.open(Path(capture_path))
     params = session.radar_params()
@@ -115,7 +121,7 @@ def build_range_time_volume(
 
     for i, path in enumerate(paths):
         raw = np.load(path)
-        rd_raw = frame_rd_power_db(raw, params)
+        rd_raw = frame_rd_power_db(raw, params, limiter=limiter)
         rd_raw_list.append(rd_raw)
         rda_complex_list.append(compute_rda(frame_to_radar_cube(raw, params)))
 

@@ -129,6 +129,7 @@ def main() -> int:
             push_pull_snr_within_db=push_pull_snr_within_db,
             snr_threshold_db=proc.snr_threshold_db,
             max_frames=args.max_frames,
+            limiter=pp.range_time_limiter,
         )
         _plot_range_time_snr(vol, out_dir, range_max_m=r_max)
         np.savez_compressed(
