@@ -214,7 +214,13 @@ class LiveRadarTargetProcessor:
 
         self._range_axis, self._doppler_axis = range_doppler_axes(params)
 
-    def update(self, frame_int16: np.ndarray) -> Optional[LiveRadarTarget]:
+    def _prepare(self, frame_int16: np.ndarray) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """
+        Decode → RDA → decluttered RD power (dB).
+
+        Returns ``(rda, rd_db)`` or ``None`` while the inline background
+        calibration is still warming up.
+        """
         cube = frame_to_radar_cube(frame_int16, self.params)
         rda = compute_rda(cube)
         rd_db = rda_power_db(rda)
@@ -232,6 +238,50 @@ class LiveRadarTargetProcessor:
 
         if self._declutter_rd and self._rd_mean is not None:
             rd_db = rd_db - self._rd_mean
+        return rda, rd_db
+
+    def top_range_targets(
+        self,
+        frame_int16: np.ndarray,
+        *,
+        n_targets: int = 2,
+        min_snr_db: float | None = None,
+    ) -> Optional[list[tuple[float, float]]]:
+        """
+        Strongest reflectors along range, independent of Doppler.
+
+        The RD map is collapsed over Doppler with a per-range max, so this is
+        robust to the (unreliable) Doppler dimension — the same property that
+        makes the range–time SNR plot trustworthy. Returns up to ``n_targets``
+        ``(range_m, snr_db)`` pairs inside the ROI, sorted by SNR (highest
+        first). Returns ``None`` during background-calibration warmup.
+        """
+        prep = self._prepare(frame_int16)
+        if prep is None:
+            return None
+        _, rd_db = prep
+
+        r_lo, r_hi = self.range_gate_m
+        r_mask = (self._range_axis >= r_lo) & (self._range_axis <= r_hi)
+        if not np.any(r_mask):
+            return []
+        rd_roi = rd_db[:, r_mask]
+        range_bins_m = self._range_axis[r_mask]
+
+        snr_along_range = np.max(rd_roi_snr_map(rd_roi), axis=0)  # collapse Doppler
+        floor = -np.inf if min_snr_db is None else float(min_snr_db)
+        peaks = _range_profile_peaks(snr_along_range, floor)
+        peaks.sort(key=lambda i: float(snr_along_range[i]), reverse=True)
+        return [
+            (float(range_bins_m[i]), float(snr_along_range[i]))
+            for i in peaks[:n_targets]
+        ]
+
+    def update(self, frame_int16: np.ndarray) -> Optional[LiveRadarTarget]:
+        prep = self._prepare(frame_int16)
+        if prep is None:
+            return None
+        rda, rd_db = prep
 
         r_lo, r_hi = self.range_gate_m
         r_mask = (self._range_axis >= r_lo) & (self._range_axis <= r_hi)

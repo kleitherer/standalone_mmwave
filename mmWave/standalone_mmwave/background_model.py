@@ -39,6 +39,7 @@ def estimate_rd_background_mean(
     max_frames: int = 0,
     n_doppler_fft: int | None = None,
     n_range_fft: int | None = None,
+    limiter: bool = False,
 ) -> np.ndarray:
     acc = None
     n = 0
@@ -48,6 +49,7 @@ def estimate_rd_background_mean(
             params,
             n_doppler_fft=n_doppler_fft,
             n_range_fft=n_range_fft,
+            limiter=limiter,
         ).astype(np.float64)
         if acc is None:
             acc = np.zeros_like(rd, dtype=np.float64)
@@ -67,6 +69,7 @@ def estimate_rd_background_from_capture(
     max_frames: int = 0,
     n_doppler_fft: int | None = None,
     n_range_fft: int | None = None,
+    limiter: bool = False,
 ) -> np.ndarray:
     session = CaptureSession.open(Path(capture_path))
     paths = session.frame_paths()
@@ -81,6 +84,7 @@ def estimate_rd_background_from_capture(
         max_frames=0,
         n_doppler_fft=n_doppler_fft,
         n_range_fft=n_range_fft,
+        limiter=limiter,
     )
 
 

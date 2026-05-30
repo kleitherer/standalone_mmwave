@@ -35,7 +35,7 @@ if str(_ROOT) not in sys.path:
 
 from background_model import estimate_rd_background_from_capture
 from processing.osc_utils import build_osc_message
-from processing.target_detect import GESTURE_NONE, LiveRadarTargetProcessor
+from processing.range_time_snr import RangeTimeSnrProcessor
 from radar_config import RadarConfig
 from radar_receiver import RadarReceiver
 
@@ -176,6 +176,10 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument("--packet-timeout", type=float, default=float(net_cfg.get("packet_timeout_sec", 5.0)))
     p.add_argument("--range-address", default=osc_cfg.get("range_address", "/radar/range_m"))
+    p.add_argument("--range2-address", default=osc_cfg.get("range2_address", "/radar/range2_m"),
+                   help="Second target range (only if 0.3–2 m from primary)")
+    p.add_argument("--snr2-address", default=osc_cfg.get("snr2_address", "/radar/snr2_db"),
+                   help="Second target SNR (only sent with range2_m)")
     p.add_argument("--doppler-address", default=osc_cfg.get("doppler_address", "/radar/doppler_mps"))
     p.add_argument("--angle-address", default=osc_cfg.get("angle_address", "/radar/angle_deg"))
     p.add_argument("--snr-address", default=osc_cfg.get("snr_address", "/radar/snr_db"))
@@ -237,6 +241,24 @@ def _parse_args() -> argparse.Namespace:
         help="Push/pull: |d(range)/dt| must exceed this for push or pull label",
     )
     p.add_argument(
+        "--secondary-min-range-sep-m",
+        type=float,
+        default=float(osc_cfg.get("secondary_min_range_sep_m", 0.3)),
+        help="range2_m: min separation from primary (m)",
+    )
+    p.add_argument(
+        "--secondary-max-range-sep-m",
+        type=float,
+        default=float(osc_cfg.get("secondary_max_range_sep_m", 2.0)),
+        help="range2_m: max separation from primary (m)",
+    )
+    p.add_argument(
+        "--range-time-limiter",
+        action=argparse.BooleanOptionalAction,
+        default=bool(settings.get("post_processing", {}).get("range_time_limiter", True)),
+        help="1-bit limiter on RD (must match post_processing.range_time_limiter)",
+    )
+    p.add_argument(
         "--emit-below-threshold",
         action="store_true",
         help="If set, keep publishing range/doppler/angle/snr even when SNR < threshold",
@@ -293,7 +315,7 @@ def _parse_args() -> argparse.Namespace:
 def main() -> int:
     args = _parse_args()
     log = lambda msg: print(msg, flush=True)
-    ang_cfg = _load_settings(args.settings).get("angle_estimation", {})
+    proc_cfg = _load_settings(args.settings).get("processing", {})
     if args.background_capture:
         args.background_capture = _resolve_capture_path(args.background_capture)
 
@@ -351,25 +373,32 @@ def main() -> int:
             args.background_capture,
             params,
             max_frames=max(0, int(args.background_max_frames)),
+            limiter=args.range_time_limiter,
         )
 
-    processor = LiveRadarTargetProcessor(
-        params,
-        range_gate_m=(args.roi_min, args.roi_max),
-        clutter_window=args.calibration_frames,
-        background_rd_mean=background_rd_mean,
-        smooth_alpha=args.smooth_alpha,
-        angle_fft_bins=int(ang_cfg.get("fft_bins", 128)),
-        angle_fov_deg=float(ang_cfg.get("fov_deg", 90.0)),
-        presence_threshold_db=args.presence_threshold_db,
-        push_pull_mode=args.push_pull,
-        push_pull_snr_within_db=args.push_pull_snr_within_db,
-        push_pull_use_range_derivative_for_doppler=args.push_pull_range_derivative,
-        gesture_min_peak_snr_db=args.gesture_min_peak_snr_db,
-        gesture_min_range_sep_m=args.gesture_min_range_sep_m,
-        gesture_max_range_sep_m=args.gesture_max_range_sep_m,
-        gesture_min_velocity_mps=args.gesture_min_velocity_mps,
-    )
+    range_time_processor: RangeTimeSnrProcessor | None = None
+    if background_rd_mean is not None:
+        range_time_processor = RangeTimeSnrProcessor(
+            params,
+            range_gate_m=(args.roi_min, args.roi_max),
+            background_rd_mean=background_rd_mean,
+            limiter=args.range_time_limiter,
+        )
+    else:
+        inline_calib = args.calibration_frames
+        if inline_calib <= 0:
+            inline_calib = int(proc_cfg.get("declutter_mean_frames", 0))
+        range_time_processor = RangeTimeSnrProcessor(
+            params,
+            range_gate_m=(args.roi_min, args.roi_max),
+            limiter=args.range_time_limiter,
+            inline_calib_frames=inline_calib,
+        )
+        if inline_calib > 0:
+            log(f"  Range SNR: inline calib {inline_calib} frames (limiter={'on' if args.range_time_limiter else 'off'})")
+        else:
+            log(f"  Range SNR: no declutter (limiter={'on' if args.range_time_limiter else 'off'})")
+
     osc = OscSender(args.osc_host, args.osc_port)
     osc.send_text(args.mode_address, args.live_mode_text)
     log(f"  Mode → Max: {args.live_mode_text!r}  ({args.mode_address})")
@@ -475,12 +504,12 @@ def main() -> int:
                 udp_timeouts += 1
                 now_diag = time.monotonic()
                 if now_diag - last_diag >= 2.0:
-                    calib_n = getattr(processor, "_frames_seen", 0)
-                    calib_done = processor._rd_mean is not None
+                    calib_n = range_time_processor.frames_seen
+                    calib_total = range_time_processor._inline_calib_frames
                     log(
                         f"  [diag] no UDP packet in {packet_timeout:.0f}s — "
                         f"frames={frames_rx} timeouts={udp_timeouts} "
-                        f"calib={'done' if calib_done else f'{calib_n}/{args.calibration_frames}'}"
+                        f"calib={'done' if range_time_processor.ready else f'{calib_n}/{calib_total}'}"
                     )
                     last_diag = now_diag
                 continue
@@ -502,43 +531,45 @@ def main() -> int:
             if cap_writer is not None:
                 cap_writer.write_frame(frame)
 
-            est = processor.update(frame)
-            if est is None:
+            targets = range_time_processor.targets_from_frame(
+                frame,
+                min_secondary_snr_db=args.presence_threshold_db,
+                secondary_min_sep_m=args.secondary_min_range_sep_m,
+                secondary_max_sep_m=args.secondary_max_range_sep_m,
+            )
+            if targets is None:
                 now_diag = time.monotonic()
                 if now_diag - last_diag >= 2.0:
-                    calib_n = getattr(processor, "_frames_seen", 0)
+                    calib_n = range_time_processor.frames_seen
+                    calib_total = range_time_processor._inline_calib_frames
                     log(
                         f"  [diag] UDP ok — frames={frames_rx} "
-                        f"calibrating {calib_n}/{args.calibration_frames} (no OSC yet)"
+                        f"calibrating {calib_n}/{calib_total} (no OSC yet)"
                     )
                     last_diag = now_diag
                 continue
 
-            if (not args.emit_below_threshold) and est.snr_db < args.presence_threshold_db:
+            t1 = targets[0] if len(targets) > 0 else None
+            t2 = targets[1] if len(targets) > 1 else None
+            present = t1 is not None and t1[1] >= args.presence_threshold_db
+
+            if (not args.emit_below_threshold) and not present:
                 osc.send(args.presence_address, 0.0)
-                if not args.no_gesture and args.gesture_address:
-                    osc.send_text(args.gesture_address, GESTURE_NONE)
                 continue
 
-            osc.send(args.range_address, est.range_m)
-            if not args.no_doppler:
-                osc.send(args.doppler_address, est.doppler_mps)
-            if not args.no_angle:
-                osc.send(args.angle_address, est.angle_deg)
+            r1, snr1 = t1 if t1 is not None else (0.0, 0.0)
+            osc.send(args.range_address, r1)
             if not args.no_snr:
-                osc.send(args.snr_address, est.snr_db)
-            osc.send(args.presence_address, est.presence)
-            if not args.no_gesture and args.gesture_address:
-                osc.send_text(args.gesture_address, est.gesture)
+                osc.send(args.snr_address, snr1)
+            if t2 is not None:
+                osc.send(args.range2_address, t2[0])
+                if not args.no_snr:
+                    osc.send(args.snr2_address, t2[1])
+            osc.send(args.presence_address, 1.0 if present else 0.0)
 
             if args.bundle_address:
-                osc.send_bundle(
-                    args.bundle_address,
-                    est.range_m,
-                    est.doppler_mps,
-                    est.angle_deg,
-                    est.snr_db,
-                )
+                r2, snr2 = t2 if t2 is not None else (0.0, 0.0)
+                osc.send_bundle(args.bundle_address, r1, snr1, r2, snr2)
 
             sent += 1
 
@@ -546,11 +577,14 @@ def main() -> int:
             if now - last_status >= args.status_interval:
                 elapsed = now - t0
                 rate = sent / max(elapsed, 1e-6)
+                t2_str = (
+                    f"T2: R={t2[0]:.2f}m SNR={t2[1]:.1f}dB"
+                    if t2 is not None
+                    else "T2: —"
+                )
                 log(
                     f"  {elapsed:5.1f}s  osc={sent} ({rate:.1f}/s)  "
-                    f"R={est.range_m:.2f}m  V={est.doppler_mps:+.2f}m/s  "
-                    f"A={est.angle_deg:+.1f}°  SNR={est.snr_db:.1f}dB  "
-                    f"gesture={est.gesture}"
+                    f"T1: R={r1:.2f}m SNR={snr1:.1f}dB  |  {t2_str}"
                 )
                 last_status = now
 
@@ -574,7 +608,7 @@ def main() -> int:
     elif sent == 0 and frames_rx > 0:
         log(
             f"ERROR: got {frames_rx} frames but 0 OSC — "
-            f"need {args.calibration_frames} frames for calibration first, or processing failed."
+            f"wait for range–time SNR calibration, or check processing."
         )
     return 0 if sent > 0 else 1
 
