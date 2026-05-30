@@ -39,12 +39,11 @@ Each raw frame is turned into a cube, then `compute_rda()` subtracts the **slow-
 
 ### Session background (global mean in dB)
 
-After calibration, every frame’s range–Doppler **power (dB)** has a fixed background subtracted:
+**Offline (recommended):** `plot_heatmap` / replay use `declutter_mean_frames` (default **45**) — mean RD power of the **first N frames of the recorded capture**, subtracted from every frame. Record normally; hold still for the first ~1 s of the clip if those frames should be “empty” background.
 
-- **Live / replay (`LiveRadarTargetProcessor`):** average RD map over the first `calibration_frames` (default **45**), *or* mean of an **empty-room capture** if `background.capture` is set in config.
-- **Post-processing (`plot_heatmap`, `plot_rd_movie`):** same — first N frames of the clip, or dedicated background capture.
+**Live capture / OSC:** `calibration_frames: 0` — no warmup, no blocked OSC. Raw RD (or set `background.capture` to an empty-room folder for fixed subtraction).
 
-During the first `calibration_frames` live, **no OSC target is sent** (processor returns `None`). Stay out of the beam or hold a still pose you want subtracted.
+Legacy: `calibration_frames > 0` still supported for live inline warmup (no OSC until N frames).
 
 ### SNR for peak picking
 

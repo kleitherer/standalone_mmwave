@@ -89,7 +89,7 @@ def estimate_range_gate_for_capture(
     vol = build_range_time_volume(
         bg_path,
         range_gate_m=(proc_cfg.range_min_m, radar_max_range_m),
-        clutter_window=proc_cfg.calibration_frames,
+        clutter_window=proc_cfg.declutter_mean_frames,
         snr_threshold_db=proc_cfg.snr_threshold_db,
         max_frames=n_bg if not bg.capture else 0,
         show_progress=show_progress,

@@ -1,6 +1,6 @@
 {
   "device": {
-    "radar_cfg": "../multimodal-ros/xwr_raw_ros/configs/6843isk/xwr68xx_3Tx_wfv0.5_RDAhigh_19.2m.cfg",
+    "radar_cfg": "../mmw-tracking-versions/waveform_configs/xwr68xx_3Tx_wfv0.5_RDAhigh_19.2m.cfg",
     "cmd_tty": "/dev/cu.usbserial-00D832110"
   },
   "network": {
@@ -12,11 +12,24 @@
   },
   "processing": {
     "roi_min_m": 0.0,
-    "roi_max_m": 3.0,
+    "roi_max_m": 3.8,
     "presence_threshold_db": 0.0,
-    "calibration_frames": 45,
+    "calibration_frames": 0,
+    "declutter_mean_frames": 45,
     "frame_average_count": 10,
     "smooth_alpha": 0.2
+  },
+  "post_processing": {
+    "rd_display": "raw_power",
+    "subtract_background": false,
+    "auto_range_gate": false,
+    "write_range_time_snr": true,
+    "write_rd_movie": true,
+    "rd_snapshot_frame": null,
+    "movie_format": "mp4",
+    "movie_fps": 0,
+    "percentile_color_scale": true,
+    "movie_dpi": 100
   },
   "push_pull": {
     "enabled": true,
@@ -30,12 +43,12 @@
     "min_velocity_mps": 0.15
   },
   "run": {
-    "duration_sec": null
+    "duration_sec": 10
   },
   "capture": {
     "enabled": true,
     "base_dir": "captures",
-    "name": "dance_dance",
+    "name": "ccrma",
     "save_raw_frames": true
   },
   "background": {

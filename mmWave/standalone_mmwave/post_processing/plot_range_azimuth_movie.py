@@ -2,10 +2,9 @@
 """
 Per-frame range–azimuth heatmap → movie (MP4 or GIF).
 
-Per range bin: strongest Doppler at that range, then antenna FFT (same as static ``range_azimuth.png``).
+Settings: config/live_radar_to_max.json (``processing.roi_*``, ``post_processing.movie_*``).
 
-  python3 -m post_processing.plot_range_azimuth_movie --capture captures/push_pull
-  python3 -m post_processing.plot_range_azimuth_movie --capture push_pull --format gif
+  python3 -m post_processing.plot_range_azimuth_movie --capture newccrma
 
 Output: <capture>/analysis/range_azimuth_movie.mp4
 """
@@ -23,8 +22,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from capture_store import CaptureSession
-from post_processing.processing_config import ProcessingConfig
-from post_processing.range_gate import estimate_range_gate_for_capture
+from post_processing.processing_config import ProcessingConfig, resolve_capture_range_gate
 from processing.range_azimuth import collect_range_azimuth_frames
 
 
@@ -117,25 +115,13 @@ def render_range_azimuth_movie(
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Range–azimuth heatmap movie from capture")
+    p = argparse.ArgumentParser(
+        description="Range–azimuth movie (settings: config/live_radar_to_max.json)"
+    )
     p.add_argument("--capture", type=Path, required=True)
     p.add_argument("--out-dir", type=Path, default=None)
     p.add_argument("--config", type=Path, default=None)
-    p.add_argument("--background-capture", type=Path, default=None)
-    p.add_argument("--roi-min", type=float, default=None)
-    p.add_argument("--roi-max", type=float, default=None)
-    p.add_argument("--calibration-frames", type=int, default=None)
     p.add_argument("--max-frames", type=int, default=0)
-    p.add_argument("--angle-bins", type=int, default=None)
-    p.add_argument("--angle-fov-deg", type=float, default=None)
-    p.add_argument(
-        "--format",
-        choices=["mp4", "gif"],
-        default="mp4",
-        help="Output video format (mp4 requires ffmpeg)",
-    )
-    p.add_argument("--fps", type=float, default=0.0, help="0 = capture frame rate from metadata")
-    p.add_argument("--dpi", type=int, default=100)
     return p.parse_args()
 
 
@@ -145,34 +131,25 @@ def main() -> int:
     out_dir = args.out_dir or (capture / "analysis")
 
     proc = ProcessingConfig.load(args.config)
-    if args.background_capture:
-        proc.background.capture = args.background_capture.resolve()
-    if args.roi_min is not None:
-        proc.range_min_m = args.roi_min
-    if args.roi_max is not None:
-        proc.range_max_m = args.roi_max
-    if args.calibration_frames is not None:
-        proc.calibration_frames = args.calibration_frames
+    pp = proc.post_processing
+    angle_bins = proc.angle.fft_bins
+    angle_fov = proc.angle.fov_deg
 
-    angle_bins = int(
-        args.angle_bins if args.angle_bins is not None else proc.angle.fft_bins
-    )
-    angle_fov = float(
-        args.angle_fov_deg if args.angle_fov_deg is not None else proc.angle.fov_deg
-    )
-
-    cfg_path = args.config or (_ROOT / "config" / "live_radar_to_max.json")
     session = CaptureSession.open(capture)
     params = session.radar_params()
     radar_max = float(params["range_max"])
 
-    print(f"Range gate for {capture.name}…")
-    r_min, r_max, _ = estimate_range_gate_for_capture(capture, proc, radar_max_range_m=radar_max)
-    print(f"  range gate: {r_min:.2f} – {r_max:.2f} m")
+    r_min, r_max, gate_info = resolve_capture_range_gate(
+        capture, proc, radar_max_m=radar_max
+    )
+    print(f"Config: {proc.config_path}")
+    print(f"  ROI: {r_min:.2f} – {r_max:.2f} m")
+    if gate_info is not None:
+        proc.save_applied(out_dir / "range_gate.json", gate_info)
     print(f"  angle FFT bins: {angle_bins}  FOV: ±{angle_fov/2:.0f}°")
 
     frame_time_ms = float(params.get("frame_time", 22.22))
-    fps = args.fps if args.fps > 0 else 1000.0 / frame_time_ms
+    fps = pp.movie_fps if pp.movie_fps > 0 else 1000.0 / frame_time_ms
 
     print("Building per-frame range–azimuth maps…")
     ra_frames, range_m, angle_deg, time_s = collect_range_azimuth_frames(
@@ -182,12 +159,12 @@ def main() -> int:
         fov_deg=angle_fov,
         background_capture=proc.background.capture,
         background_max_frames=proc.background.max_frames,
-        calibration_frames=proc.calibration_frames,
+        calibration_frames=proc.declutter_mean_frames,
         max_frames=args.max_frames,
     )
 
-    ext = "gif" if args.format == "gif" else "mp4"
-    out_path = out_dir / f"range_azimuth_movie.{ext}"
+    fmt = pp.movie_format if pp.movie_format in ("mp4", "gif") else "mp4"
+    out_path = out_dir / f"range_azimuth_movie.{fmt}"
     render_range_azimuth_movie(
         ra_frames,
         range_m,
@@ -195,9 +172,9 @@ def main() -> int:
         time_s,
         out_path,
         fps=fps,
-        fmt=args.format,
+        fmt=fmt,
         session_id=capture.name,
-        dpi=args.dpi,
+        dpi=pp.movie_dpi,
     )
     print(f"Done: {out_path.resolve()}")
     return 0

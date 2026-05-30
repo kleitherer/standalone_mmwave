@@ -46,7 +46,7 @@ Outputs in `<capture>/analysis/`:
 ## Processing alignment with live
 
 - Declutter method is global-mean only.
-- Background is estimated from the first `calibration_frames` frames, matching live warmup behavior.
+- Background is the global mean RD map from the first `declutter_mean_frames` frames of the capture (or a separate empty-room capture). Live streaming uses `calibration_frames: 0` so recording starts immediately with no warmup.
 - SNR is computed from decluttered RD power relative to per-frame median noise floor.
 - Range limits use `processing.roi_min_m` / `processing.roi_max_m` from `config/live_radar_to_max.json`.
 - Azimuth uses `angle_estimation.method`: `fft` (default) or `music` (super-resolution).

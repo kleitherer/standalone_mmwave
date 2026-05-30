@@ -155,12 +155,12 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--roi-min", type=float, default=float(proc_cfg.get("roi_min_m", 0.5)), help="Range gate min (m)")
     p.add_argument("--roi-max", type=float, default=float(proc_cfg.get("roi_max_m", 5.0)), help="Range gate max (m)")
     p.add_argument("--smooth-alpha", type=float, default=float(proc_cfg.get("smooth_alpha", 0.2)), help="EMA on outputs (0=off)")
-    default_calibration_frames = int(proc_cfg.get("calibration_frames", proc_cfg.get("clutter_window", 45)))
+    default_calibration_frames = int(proc_cfg.get("calibration_frames", proc_cfg.get("clutter_window", 0)))
     p.add_argument(
         "--calibration-frames",
         type=int,
         default=default_calibration_frames,
-        help="Global-mean calibration frame count (stand clear during this warmup)",
+        help="Live-only: inline RD warmup frames (0=off; use declutter_mean_frames offline)",
     )
     p.add_argument(
         "--clutter-window",
@@ -328,8 +328,10 @@ def main() -> int:
         args.calibration_frames = int(args.clutter_window)
     if args.background_capture:
         log(f"  BG src:  {args.background_capture} (fixed background model)")
+    elif args.calibration_frames > 0:
+        log(f"  Live BG: global-mean over first {args.calibration_frames} frames (no OSC until done)")
     else:
-        log(f"  Calib:   global-mean over first {args.calibration_frames} frames")
+        log("  Live BG: none (raw RD for OSC; offline declutter via plot_heatmap / replay)")
     log("  Max: [udpreceive %d] → [OSC-route /radar]" % args.osc_port)
     log("")
 
@@ -390,8 +392,11 @@ def main() -> int:
     signal.signal(signal.SIGTERM, on_signal)
 
     sent = 0
+    frames_rx = 0
+    udp_timeouts = 0
     t0 = time.monotonic()
     last_status = t0
+    last_diag = t0
     packet_timeout = args.packet_timeout if args.packet_timeout > 0 else 0.0
     cap_writer = None
     frame_avg_count = max(1, int(args.frame_average_count))
@@ -453,9 +458,11 @@ def main() -> int:
             log("Starting sensor (sensorStart)...")
             receiver.radar_cli.start()
         if args.background_capture:
-            log("Streaming… (using fixed background capture model) Ctrl+C to stop.")
+            log("Streaming… (fixed background capture) Ctrl+C to stop.")
+        elif args.calibration_frames > 0:
+            log("Streaming… (inline calib: stay clear until warmup done) Ctrl+C to stop.")
         else:
-            log("Streaming… (calibrating clutter first; stay out during warmup) Ctrl+C to stop.")
+            log("Streaming… Ctrl+C to stop.")
         stream_t0 = time.monotonic()
 
         while not stop:
@@ -465,7 +472,20 @@ def main() -> int:
             try:
                 frame, _ = receiver.read_frame(packet_timeout)
             except TimeoutError:
+                udp_timeouts += 1
+                now_diag = time.monotonic()
+                if now_diag - last_diag >= 2.0:
+                    calib_n = getattr(processor, "_frames_seen", 0)
+                    calib_done = processor._rd_mean is not None
+                    log(
+                        f"  [diag] no UDP packet in {packet_timeout:.0f}s — "
+                        f"frames={frames_rx} timeouts={udp_timeouts} "
+                        f"calib={'done' if calib_done else f'{calib_n}/{args.calibration_frames}'}"
+                    )
+                    last_diag = now_diag
                 continue
+
+            frames_rx += 1
 
             if frame_avg_count > 1:
                 import numpy as np
@@ -479,11 +499,20 @@ def main() -> int:
                 frame_acc += frame_hist[-1]
                 frame = np.rint(frame_acc / len(frame_hist)).astype(frame.dtype, copy=False)
 
-            est = processor.update(frame)
-            if est is None:
-                continue
             if cap_writer is not None:
                 cap_writer.write_frame(frame)
+
+            est = processor.update(frame)
+            if est is None:
+                now_diag = time.monotonic()
+                if now_diag - last_diag >= 2.0:
+                    calib_n = getattr(processor, "_frames_seen", 0)
+                    log(
+                        f"  [diag] UDP ok — frames={frames_rx} "
+                        f"calibrating {calib_n}/{args.calibration_frames} (no OSC yet)"
+                    )
+                    last_diag = now_diag
+                continue
 
             if (not args.emit_below_threshold) and est.snr_db < args.presence_threshold_db:
                 osc.send(args.presence_address, 0.0)
@@ -531,7 +560,22 @@ def main() -> int:
         receiver.close()
         osc.close()
 
-    log(f"Sent {sent} OSC updates.")
+    log(
+        f"Sent {sent} OSC updates. "
+        f"(UDP frames assembled: {frames_rx}, packet timeouts: {udp_timeouts})"
+    )
+    if frames_rx == 0:
+        log(
+            "ERROR: zero frames received — radar UART/DCA config ran, but no LVDS data on UDP :4098.\n"
+            "  Check: ping 192.168.33.180, Mac IP 192.168.33.30, DCA powered, Ethernet (not Wi‑Fi),\n"
+            "  close mmWave Studio if it holds the stream, power-cycle EVM+DCA, then:\n"
+            "  python3 radar_receiver.py --cfg <same.cfg> --cmd-tty <your.port> --frames 10"
+        )
+    elif sent == 0 and frames_rx > 0:
+        log(
+            f"ERROR: got {frames_rx} frames but 0 OSC — "
+            f"need {args.calibration_frames} frames for calibration first, or processing failed."
+        )
     return 0 if sent > 0 else 1
 
 

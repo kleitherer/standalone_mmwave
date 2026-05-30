@@ -63,7 +63,14 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--calibration-frames",
         type=int,
-        default=int(proc_cfg.get("calibration_frames", 45)),
+        default=int(proc_cfg.get("calibration_frames", 0)),
+        help="Live-style inline warmup (0=off); prefer --declutter-mean-frames for replay",
+    )
+    p.add_argument(
+        "--declutter-mean-frames",
+        type=int,
+        default=int(proc_cfg.get("declutter_mean_frames", 45)),
+        help="Global-mean RD background from first N frames of this capture",
     )
     p.add_argument(
         "--frame-average-count",
@@ -218,8 +225,12 @@ def main() -> int:
         log(f"  Duration: full capture (~{len(paths) / fps:.1f}s)")
     if args.background_capture:
         log(f"  BG src:   {args.background_capture}")
+    elif args.calibration_frames > 0:
+        log(f"  Live calib: first {args.calibration_frames} replay frames (no OSC until done)")
+    elif args.declutter_mean_frames > 0:
+        log(f"  Declutter: global mean of first {args.declutter_mean_frames} frames of this capture")
     else:
-        log(f"  Calib:    first {args.calibration_frames} frames of replay")
+        log("  Declutter: none (raw RD)")
     log(f"  Max: [udpreceive {args.osc_port}] → [OSC-route /radar]")
     log("")
 
@@ -234,6 +245,12 @@ def main() -> int:
             args.background_capture,
             params,
             max_frames=max(0, int(args.background_max_frames)),
+        )
+    elif args.calibration_frames <= 0 and args.declutter_mean_frames > 0:
+        background_rd_mean = estimate_rd_background_from_capture(
+            capture_path,
+            params,
+            max_frames=int(args.declutter_mean_frames),
         )
 
     processor = LiveRadarTargetProcessor(

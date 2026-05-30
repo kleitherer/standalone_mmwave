@@ -189,13 +189,18 @@ class LiveRadarTargetProcessor:
         self.params = params
         self.range_gate_m = range_gate_m
         self.doppler_gate_mps = doppler_gate_mps
-        self._calibration_frames = max(1, int(clutter_window))
+        self._inline_calib_frames = max(0, int(clutter_window))
+        self._declutter_rd = background_rd_mean is not None or self._inline_calib_frames > 0
         self._smooth_alpha = float(smooth_alpha)
         self._angle_fft_bins = int(angle_fft_bins)
         self._angle_fov_deg = float(angle_fov_deg)
         self._presence_threshold_db = float(presence_threshold_db)
         self._push_pull_mode = bool(push_pull_mode)
         self._push_pull_snr_within_db = float(push_pull_snr_within_db)
+        self._push_pull_use_range_derivative = bool(push_pull_use_range_derivative_for_doppler)
+        frame_time_ms = float(params.get("frame_time", 22.22))
+        self._frame_dt_s = max(frame_time_ms / 1000.0, 1e-6)
+        self._prev_range_m: float | None = None
         self._gesture_min_peak_snr_db = float(gesture_min_peak_snr_db)
         self._gesture_min_range_sep_m = float(gesture_min_range_sep_m)
         self._gesture_max_range_sep_m = float(gesture_max_range_sep_m)
@@ -214,18 +219,19 @@ class LiveRadarTargetProcessor:
         rda = compute_rda(cube)
         rd_db = rda_power_db(rda)
 
-        if self._rd_mean is None:
+        if self._declutter_rd and self._rd_mean is None and self._inline_calib_frames > 0:
             if self._rd_sum is None:
                 self._rd_sum = np.zeros_like(rd_db, dtype=np.float64)
             self._rd_sum += rd_db.astype(np.float64)
             self._frames_seen += 1
-            if self._frames_seen < self._calibration_frames:
+            if self._frames_seen < self._inline_calib_frames:
                 return None
             self._rd_mean = self._rd_sum / float(self._frames_seen)
             self._rd_sum = None
             self._prev_range_m = None
 
-        rd_db = rd_db - self._rd_mean
+        if self._declutter_rd and self._rd_mean is not None:
+            rd_db = rd_db - self._rd_mean
 
         r_lo, r_hi = self.range_gate_m
         r_mask = (self._range_axis >= r_lo) & (self._range_axis <= r_hi)
