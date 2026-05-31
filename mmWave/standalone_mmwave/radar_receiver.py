@@ -63,8 +63,10 @@ class RadarReceiver:
                 socket.SOL_SOCKET, socket.SO_RCVBUF, 131071 * 5
             )
 
-        frame_size = self.params["frame_size"]
-        self.frame_buffer = FrameBuffer(2 * frame_size, frame_size)
+        self.wire_frame_size = int(
+            self.params.get("wire_frame_size", self.params["frame_size"])
+        )
+        self.frame_buffer = FrameBuffer(2 * self.wire_frame_size, self.wire_frame_size)
 
     def configure(self) -> None:
         if self.radar_cli is not None:
@@ -96,7 +98,9 @@ class RadarReceiver:
             self.dca1000.data_socket.settimeout(old)
 
     def read_frame(self, packet_timeout_sec: float = 0.0):
-        """Block until a complete frame is assembled. Returns (int16 ndarray, True)."""
+        """Block until a complete wire frame is assembled; return header-stripped ADC int16."""
+        from processing.lvds_frame import strip_lvds_chirp_headers
+
         while True:
             if packet_timeout_sec > 0:
                 seqn, _bytec, msg = self.read_packet_timed(packet_timeout_sec)
@@ -104,7 +108,9 @@ class RadarReceiver:
                 seqn, _bytec, msg = self.read_packet()
             frame_data, new_frame = self.frame_buffer.add_msg(seqn, msg)
             if new_frame:
-                return frame_data, True
+                wire = np.asarray(frame_data, dtype=np.int16).ravel()
+                adc = strip_lvds_chirp_headers(wire, self.params)
+                return adc, True
 
     def close(self) -> None:
         self.stop_capture()
@@ -246,7 +252,8 @@ def main() -> int:
 
     params = receiver.params
     print(
-        f"frame_size={params['frame_size']} B, "
+        f"adc_frame={params.get('adc_frame_size', params['frame_size'])} B, "
+        f"wire_frame={params.get('wire_frame_size', params['frame_size'])} B, "
         f"shape=({params['n_chirps']}, {params['n_rx']}, {params['n_samples']}) "
         f"complex={'yes' if params['adc_output_fmt'] > 0 else 'no'}"
     )

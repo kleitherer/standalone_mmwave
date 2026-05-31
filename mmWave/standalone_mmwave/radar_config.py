@@ -115,7 +115,15 @@ class RadarConfig(OrderedDict):
         n_tx = sum(tx)
         n_rx = sum(rx)
 
-        frame_size = n_samples * n_rx * n_chirps * 2 * (2 if adc_output_fmt > 0 else 1)
+        adc_frame_size = n_samples * n_rx * n_chirps * 2 * (2 if adc_output_fmt > 0 else 1)
+        lvds_cfg = self.get("lvdsStreamCfg", [-1, 0, 1, 0])
+        lvds_enable_header = bool(int(lvds_cfg[1])) if len(lvds_cfg) > 1 else False
+        lvds_header_complex_per_chirp = 0
+        wire_frame_size = adc_frame_size
+        if lvds_enable_header and adc_output_fmt > 0:
+            lvds_header_complex_per_chirp = 16  # TI enableHeader=1 padding (complex samples)
+            wire_frame_size = adc_frame_size + n_chirps * lvds_header_complex_per_chirp * 2 * 2
+        frame_size = adc_frame_size
         frame_time = self["frameCfg"][4]
 
         range_bias = self["compRangeBiasAndRxChanPhase"][0]
@@ -150,6 +158,11 @@ class RadarConfig(OrderedDict):
                 ("n_tx", n_tx),
                 ("n_samples", n_samples),
                 ("frame_size", frame_size),
+                ("adc_frame_size", adc_frame_size),
+                ("wire_frame_size", wire_frame_size),
+                ("lvds_enable_header", int(lvds_enable_header)),
+                ("lvds_header_complex_per_chirp", lvds_header_complex_per_chirp),
+                ("lvds_header_position", "back"),
                 ("frame_time", frame_time),
                 ("operating_freq_ghz", operating_freq),
                 ("chirp_time_us", chirp_time_us),

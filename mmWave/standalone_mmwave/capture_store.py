@@ -82,11 +82,20 @@ class CaptureSession:
                 "dtype": "int16",
                 "layout": "dca_lvds_flat",
                 "description": (
-                    "Flat int16 ADC frame from DCA1000 UDP reassembly (FrameBuffer). "
-                    "De-interleave to complex cube with processing.frame_to_radar_cube()."
+                    "Header-stripped int16 ADC from DCA1000 UDP (lvds per-chirp headers "
+                    "removed after wire-aligned FrameBuffer assembly). "
+                    "De-interleave with processing.frame_to_adc_cube()."
                 ),
-                "frame_int16_count": int(radar_params["frame_size"] // 2),
-                "frame_byte_count": int(radar_params["frame_size"]),
+                "frame_int16_count": int(
+                    radar_params.get("adc_frame_size", radar_params["frame_size"]) // 2
+                ),
+                "frame_byte_count": int(
+                    radar_params.get("adc_frame_size", radar_params["frame_size"])
+                ),
+                "wire_frame_byte_count": int(
+                    radar_params.get("wire_frame_size", radar_params["frame_size"])
+                ),
+                "lvds_enable_header": bool(radar_params.get("lvds_enable_header", 0)),
                 "reshape": {
                     "n_chirps": int(radar_params["n_chirps"]),
                     "n_tx": int(radar_params["n_tx"]),

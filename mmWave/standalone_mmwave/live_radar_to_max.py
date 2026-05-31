@@ -500,22 +500,26 @@ def main() -> int:
 
             frames_rx += 1
 
+            # Frame from read_frame() is already wire-aligned + LVDS header stripped.
+            capture_frame = frame
             if frame_avg_count > 1:
                 import numpy as np
 
-                frame_f = frame.astype(np.float64, copy=False)
+                frame_f = capture_frame.astype(np.float64, copy=False)
                 if frame_acc is None:
                     frame_acc = np.zeros_like(frame_f, dtype=np.float64)
                 if len(frame_hist) == frame_hist.maxlen:
                     frame_acc -= frame_hist[0]
                 frame_hist.append(frame_f.copy())
                 frame_acc += frame_hist[-1]
-                frame = np.rint(frame_acc / len(frame_hist)).astype(frame.dtype, copy=False)
+                capture_frame = np.rint(frame_acc / len(frame_hist)).astype(
+                    capture_frame.dtype, copy=False
+                )
 
             if cap_writer is not None:
-                cap_writer.write_frame(frame)
+                cap_writer.write_frame(capture_frame)
 
-            targets = range_time_processor.targets_from_frame(frame, peak_cfg)
+            targets = range_time_processor.targets_from_frame(capture_frame, peak_cfg)
             if targets is None:
                 now_diag = time.monotonic()
                 if now_diag - last_diag >= 2.0:

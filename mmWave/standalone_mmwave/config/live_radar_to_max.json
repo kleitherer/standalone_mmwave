@@ -16,7 +16,7 @@
     "presence_threshold_db": 0.0,
     "calibration_frames": 0,
     "declutter_mean_frames": 45,
-    "frame_average_count": 0,
+    "frame_average_count": 1,
     "smooth_alpha": 0.0
   },
   "post_processing": {
