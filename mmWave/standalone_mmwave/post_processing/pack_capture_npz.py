@@ -15,6 +15,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from post_processing.compare_mmw_capture import _synthetic_mmw_stream
+from processing.mmw_rd import frame_to_mmw_cube
 
 HSI2 = b"\xc9\x0c\xcc\x09\xc9\x0c\xcc\x09"
 
@@ -24,6 +25,7 @@ def pack_capture(
     out_npz: Path,
     *,
     max_frames: int | None = None,
+    with_cube: bool = False,
 ) -> int:
     capture_dir = Path(capture_dir)
     meta = json.loads((capture_dir / "metadata.json").read_text())
@@ -45,8 +47,14 @@ def pack_capture(
 
     radar_data = np.frombuffer(b"".join(chunks), dtype=np.uint8)
     out_npz.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(out_npz, radar_data=radar_data)
-    print(f"Packed {len(paths)} frames → {out_npz} ({radar_data.nbytes / 1e6:.1f} MB)")
+    payload: dict[str, np.ndarray] = {"radar_data": radar_data}
+    if with_cube:
+        cubes = [frame_to_mmw_cube(np.load(p), params) for p in paths]
+        payload["radar_cube"] = np.concatenate(cubes, axis=0)
+    np.savez(out_npz, **payload)
+    mb = radar_data.nbytes / 1e6
+    extra = f", cube {payload['radar_cube'].shape}" if with_cube else ""
+    print(f"Packed {len(paths)} frames → {out_npz} ({mb:.1f} MB{extra})")
     return len(paths)
 
 
@@ -55,8 +63,18 @@ def main() -> int:
     p.add_argument("--capture", type=Path, required=True)
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--max-frames", type=int, default=None)
+    p.add_argument(
+        "--with-cube",
+        action="store_true",
+        help="Also store radar_cube (N,slow,Tx,Rx,samples) for continuous uD",
+    )
     args = p.parse_args()
-    pack_capture(args.capture, args.out, max_frames=args.max_frames)
+    pack_capture(
+        args.capture,
+        args.out,
+        max_frames=args.max_frames,
+        with_cube=args.with_cube,
+    )
     return 0
 
 

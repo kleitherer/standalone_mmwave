@@ -70,7 +70,7 @@
     "fov_deg": 60
   },
   "range_peak_detection": {
-    "snr_threshold_db": 9.0,
+    "snr_threshold_db": 15.0,
     "min_peak_separation_m": 0.4,
     "max_peaks_per_frame": 2,
     "require_local_maximum": true,
