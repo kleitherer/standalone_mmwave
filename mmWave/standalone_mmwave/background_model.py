@@ -1,4 +1,4 @@
-"""Shared background model utilities for live and post-processing."""
+"""Background estimation for live and post-processing (not per-frame RD formation)."""
 
 from __future__ import annotations
 
@@ -13,25 +13,6 @@ from processing.rda import compute_rda
 from processing.rd_map import frame_to_rd_power_db
 
 
-def frame_rd_power_db(
-    frame_int16: np.ndarray,
-    params: Dict,
-    *,
-    n_doppler_fft: int | None = None,
-    n_range_fft: int | None = None,
-    limiter: bool = False,
-) -> np.ndarray:
-    return frame_to_rd_power_db(
-        frame_int16,
-        params,
-        declutter=True,
-        window=True,
-        n_doppler_fft=n_doppler_fft,
-        n_range_fft=n_range_fft,
-        limiter=limiter,
-    )
-
-
 def estimate_rd_background_mean(
     frame_iter: Iterable[np.ndarray],
     params: Dict,
@@ -40,13 +21,15 @@ def estimate_rd_background_mean(
     n_doppler_fft: int | None = None,
     n_range_fft: int | None = None,
     limiter: bool = False,
+    pipeline: str = "standalone",
 ) -> np.ndarray:
     acc = None
     n = 0
     for frame in frame_iter:
-        rd = frame_rd_power_db(
+        rd = frame_to_rd_power_db(
             frame,
             params,
+            pipeline=pipeline,  # type: ignore[arg-type]
             n_doppler_fft=n_doppler_fft,
             n_range_fft=n_range_fft,
             limiter=limiter,
@@ -70,6 +53,7 @@ def estimate_rd_background_from_capture(
     n_doppler_fft: int | None = None,
     n_range_fft: int | None = None,
     limiter: bool = False,
+    pipeline: str = "standalone",
 ) -> np.ndarray:
     session = CaptureSession.open(Path(capture_path))
     paths = session.frame_paths()
@@ -85,6 +69,7 @@ def estimate_rd_background_from_capture(
         n_doppler_fft=n_doppler_fft,
         n_range_fft=n_range_fft,
         limiter=limiter,
+        pipeline=pipeline,
     )
 
 

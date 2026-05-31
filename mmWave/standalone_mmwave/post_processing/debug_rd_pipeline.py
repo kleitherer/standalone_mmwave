@@ -17,7 +17,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from background_model import frame_rd_power_db
+from background_model import estimate_rd_background_from_capture
 from capture_store import CaptureSession
 from post_processing.processing_config import ProcessingConfig, resolve_capture_range_gate
 from post_processing.rd_maps import _frame_times
@@ -25,6 +25,7 @@ from post_processing.rd_plot_mmw import color_limits, plot_rd_frame
 from processing.adc_cube import frame_to_adc_cube
 from processing.cube import frame_to_radar_cube
 from processing.rda import compute_rda, range_doppler_axes, rda_power_db
+from processing.rd_map import frame_to_rd_power_db
 from processing.rd_reference import compute_rd_from_frame, tdm_doppler_params
 
 
@@ -140,14 +141,14 @@ def main() -> int:
             )
 
     # --- Production RD path (explicit virt-ant / per-TX decimation) ---
-    rd_prod = frame_rd_power_db(raw_int16, params)[:, r_mask]
+    rd_prod = frame_to_rd_power_db(raw_int16, params)[:, r_mask]
     vmin, vmax = color_limits(rd_prod, use_percentile=True)
     plot_rd_frame(
         rd_prod,
         range_m,
         doppler_axis,
         out_dir / f"rd_production_frame{frame_idx}.png",
-        title=f"production frame_rd_power_db (per-TX virt ant, declutter) frame {frame_idx}",
+        title=f"production frame_to_rd_power_db (per-TX virt ant, declutter) frame {frame_idx}",
         vmin=vmin,
         vmax=vmax,
     )
@@ -216,9 +217,9 @@ def main() -> int:
     if n_cal > 0:
         bg_frames = [np.load(p) for p in session.frame_paths()[:n_cal]]
         bg = np.mean(
-            np.stack([frame_rd_power_db(f, params) for f in bg_frames], axis=0), axis=0
+            np.stack([frame_to_rd_power_db(f, params) for f in bg_frames], axis=0), axis=0
         )
-        rd_bg = (frame_rd_power_db(raw_int16, params) - bg)[:, r_mask]
+        rd_bg = (frame_to_rd_power_db(raw_int16, params) - bg)[:, r_mask]
         vmin, vmax = color_limits(rd_bg, use_percentile=True)
         plot_rd_frame(
             rd_bg,

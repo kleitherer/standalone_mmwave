@@ -8,7 +8,9 @@ from typing import Dict, Optional, Tuple
 
 import numpy as np
 
-from background_model import estimate_rd_background_from_capture, frame_rd_power_db
+from background_model import estimate_rd_background_from_capture
+from processing.rd_map import frame_to_rd_power_db
+from processing.range_peak_detection import RangePeakDetectionConfig, osc_targets_from_profile
 from processing.rda import range_doppler_axes
 
 
@@ -115,27 +117,17 @@ class RangeTimeSnrNpz:
     def targets_for_frame(
         self,
         frame_idx: int,
-        *,
-        min_secondary_snr_db: float,
-        secondary_min_sep_m: float,
-        secondary_max_sep_m: float,
+        peak_cfg: RangePeakDetectionConfig,
     ) -> list[tuple[float, float]]:
         if frame_idx < 0 or frame_idx >= self.snr_db.shape[0]:
             return []
-        primary, secondary = select_range_time_targets(
-            self.snr_db[frame_idx],
-            self.range_m,
-            min_secondary_snr_db=min_secondary_snr_db,
-            secondary_min_sep_m=secondary_min_sep_m,
-            secondary_max_sep_m=secondary_max_sep_m,
-        )
-        return targets_list_from_pair(primary, secondary)
+        return osc_targets_from_profile(self.snr_db[frame_idx], self.range_m, peak_cfg)
 
 
 class RangeTimeSnrProcessor:
     """
     Per-frame range–time SNR targets using the post-processing RD path
-    (``frame_rd_power_db`` + optional limiter + background subtraction).
+    (``frame_to_rd_power_db`` + optional limiter + background subtraction).
     """
 
     def __init__(
@@ -199,12 +191,9 @@ class RangeTimeSnrProcessor:
     def targets_from_frame(
         self,
         frame_int16: np.ndarray,
-        *,
-        min_secondary_snr_db: float,
-        secondary_min_sep_m: float,
-        secondary_max_sep_m: float,
+        peak_cfg: RangePeakDetectionConfig,
     ) -> list[tuple[float, float]] | None:
-        rd_raw = frame_rd_power_db(
+        rd_raw = frame_to_rd_power_db(
             frame_int16,
             self.params,
             limiter=self._limiter,
@@ -228,11 +217,4 @@ class RangeTimeSnrProcessor:
             return []
         rd_roi = rd_declutter[:, self._r_mask]
         profile = range_time_snr_along_range(rd_roi)
-        primary, secondary = select_range_time_targets(
-            profile,
-            self._range_bins_m,
-            min_secondary_snr_db=min_secondary_snr_db,
-            secondary_min_sep_m=secondary_min_sep_m,
-            secondary_max_sep_m=secondary_max_sep_m,
-        )
-        return targets_list_from_pair(primary, secondary)
+        return osc_targets_from_profile(profile, self._range_bins_m, peak_cfg)

@@ -7,10 +7,11 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from background_model import estimate_rd_background_from_capture, frame_rd_power_db
+from background_model import estimate_rd_background_from_capture
 from capture_store import CaptureSession
 from post_processing.rd_maps import _frame_times, rd_to_snr_db
-from processing.mmw_rd import frame_to_mmw_rd_power_db, mmw_range_doppler_axes
+from processing.mmw_rd import mmw_range_doppler_axes
+from processing.rd_map import frame_to_rd_power_db
 from processing.rda import range_doppler_axes
 
 if TYPE_CHECKING:
@@ -96,20 +97,18 @@ def collect_rd_frames(
     if not paths:
         raise RuntimeError(f"No frames in {capture_path}")
 
+    pipeline: str = "mmw" if use_mmw else "standalone"
     rd_raw_list: list[np.ndarray] = []
     for i, path in enumerate(paths):
-        raw_int16 = np.load(path)
-        if use_mmw:
-            rd_raw_list.append(frame_to_mmw_rd_power_db(raw_int16, params))
-        else:
-            rd_raw_list.append(
-                frame_rd_power_db(
-                    raw_int16,
-                    params,
-                    n_doppler_fft=n_doppler_fft,
-                    n_range_fft=n_range_fft,
-                )
+        rd_raw_list.append(
+            frame_to_rd_power_db(
+                np.load(path),
+                params,
+                pipeline=pipeline,  # type: ignore[arg-type]
+                n_doppler_fft=n_doppler_fft,
+                n_range_fft=n_range_fft,
             )
+        )
         if show_progress and (i + 1) % 50 == 0:
             print(f"  loaded {i + 1}/{len(paths)} frames…", flush=True)
 
@@ -121,6 +120,7 @@ def collect_rd_frames(
                 max_frames=background_max_frames,
                 n_doppler_fft=n_doppler_fft,
                 n_range_fft=n_range_fft,
+                pipeline=pipeline,
             )
         else:
             n_calib = min(len(rd_raw_list), max(1, int(calibration_frames)))

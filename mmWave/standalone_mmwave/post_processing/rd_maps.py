@@ -13,8 +13,8 @@ from capture_store import CaptureSession
 from background_model import (
     estimate_rd_background_from_capture,
     estimate_rda_background_from_capture,
-    frame_rd_power_db,
 )
+from processing.rd_map import frame_to_rd_power_db
 from processing.cube import frame_to_radar_cube
 from processing.rda import compute_rda, range_doppler_axes
 from processing.angle_estimate import (
@@ -121,7 +121,7 @@ def build_range_time_volume(
 
     for i, path in enumerate(paths):
         raw = np.load(path)
-        rd_raw = frame_rd_power_db(raw, params, limiter=limiter)
+        rd_raw = frame_to_rd_power_db(raw, params, limiter=limiter)
         rd_raw_list.append(rd_raw)
         rda_complex_list.append(compute_rda(frame_to_radar_cube(raw, params)))
 

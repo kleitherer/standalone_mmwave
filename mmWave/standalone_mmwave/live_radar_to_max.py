@@ -35,6 +35,7 @@ if str(_ROOT) not in sys.path:
 
 from background_model import estimate_rd_background_from_capture
 from processing.osc_utils import build_osc_message
+from processing.range_peak_detection import RangePeakDetectionConfig
 from processing.range_time_snr import RangeTimeSnrProcessor
 from radar_config import RadarConfig
 from radar_receiver import RadarReceiver
@@ -241,27 +242,15 @@ def _parse_args() -> argparse.Namespace:
         help="Push/pull: |d(range)/dt| must exceed this for push or pull label",
     )
     p.add_argument(
-        "--secondary-min-range-sep-m",
-        type=float,
-        default=float(osc_cfg.get("secondary_min_range_sep_m", 0.3)),
-        help="range2_m: min separation from primary (m)",
-    )
-    p.add_argument(
-        "--secondary-max-range-sep-m",
-        type=float,
-        default=float(osc_cfg.get("secondary_max_range_sep_m", 2.0)),
-        help="range2_m: max separation from primary (m)",
+        "--emit-below-threshold",
+        action="store_true",
+        help="If set, keep publishing range/snr even when SNR < range_peak_detection.snr_threshold_db",
     )
     p.add_argument(
         "--range-time-limiter",
         action=argparse.BooleanOptionalAction,
         default=bool(settings.get("post_processing", {}).get("range_time_limiter", True)),
         help="1-bit limiter on RD (must match post_processing.range_time_limiter)",
-    )
-    p.add_argument(
-        "--emit-below-threshold",
-        action="store_true",
-        help="If set, keep publishing range/doppler/angle/snr even when SNR < threshold",
     )
     p.add_argument("--no-doppler", action="store_true")
     p.add_argument("--no-angle", action="store_true")
@@ -315,7 +304,9 @@ def _parse_args() -> argparse.Namespace:
 def main() -> int:
     args = _parse_args()
     log = lambda msg: print(msg, flush=True)
-    proc_cfg = _load_settings(args.settings).get("processing", {})
+    settings = _load_settings(args.settings)
+    proc_cfg = settings.get("processing", {})
+    peak_cfg = RangePeakDetectionConfig.from_settings(settings)
     if args.background_capture:
         args.background_capture = _resolve_capture_path(args.background_capture)
 
@@ -333,14 +324,7 @@ def main() -> int:
     log(f"  DCA:     {args.dca_ip}  UDP data {args.host_data_port}")
     log(f"  OSC:     {args.osc_host}:{args.osc_port}")
     log(f"  ROI:     {args.roi_min:.2f}–{args.roi_max:.2f} m")
-    log(f"  SNR min: {args.presence_threshold_db:.1f} dB")
-    if args.push_pull:
-        log(
-            f"  Push/pull: ON — nearest range among peaks within "
-            f"{args.push_pull_snr_within_db:.1f} dB of max SNR"
-        )
-        if args.push_pull_range_derivative:
-            log("  Push/pull: d(range)/dt → /radar/doppler_mps (temporary)")
+    log(f"  Peak SNR threshold: {peak_cfg.snr_threshold_db:.1f} dB (range_peak_detection)")
     log(f"  Avg:     {max(1, int(args.frame_average_count))} frame(s)")
     if args.duration_sec and args.duration_sec > 0:
         log(f"  Duration:{args.duration_sec:.1f}s (auto-stop)")
@@ -531,12 +515,7 @@ def main() -> int:
             if cap_writer is not None:
                 cap_writer.write_frame(frame)
 
-            targets = range_time_processor.targets_from_frame(
-                frame,
-                min_secondary_snr_db=args.presence_threshold_db,
-                secondary_min_sep_m=args.secondary_min_range_sep_m,
-                secondary_max_sep_m=args.secondary_max_range_sep_m,
-            )
+            targets = range_time_processor.targets_from_frame(frame, peak_cfg)
             if targets is None:
                 now_diag = time.monotonic()
                 if now_diag - last_diag >= 2.0:
@@ -551,7 +530,7 @@ def main() -> int:
 
             t1 = targets[0] if len(targets) > 0 else None
             t2 = targets[1] if len(targets) > 1 else None
-            present = t1 is not None and t1[1] >= args.presence_threshold_db
+            present = t1 is not None and t1[1] >= peak_cfg.snr_threshold_db
 
             if (not args.emit_below_threshold) and not present:
                 osc.send(args.presence_address, 0.0)

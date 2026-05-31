@@ -31,6 +31,7 @@ if str(_ROOT) not in sys.path:
 from background_model import estimate_rd_background_from_capture
 from capture_store import CaptureSession
 from live_radar_to_max import OscSender, _load_settings, _resolve_capture_path
+from processing.range_peak_detection import RangePeakDetectionConfig
 from processing.range_time_snr import RangeTimeSnrNpz, RangeTimeSnrProcessor
 from processing.target_detect import GESTURE_NONE, LiveRadarTargetProcessor
 
@@ -120,18 +121,6 @@ def _parse_args() -> argparse.Namespace:
         default=float(gesture_cfg.get("min_velocity_mps", 0.15)),
     )
     p.add_argument(
-        "--secondary-min-range-sep-m",
-        type=float,
-        default=float(osc_cfg.get("secondary_min_range_sep_m", 0.3)),
-        help="range2_m: min separation from primary (m)",
-    )
-    p.add_argument(
-        "--secondary-max-range-sep-m",
-        type=float,
-        default=float(osc_cfg.get("secondary_max_range_sep_m", 2.0)),
-        help="range2_m: max separation from primary (m)",
-    )
-    p.add_argument(
         "--range-time-limiter",
         action=argparse.BooleanOptionalAction,
         default=bool(settings.get("post_processing", {}).get("range_time_limiter", True)),
@@ -199,7 +188,9 @@ def _parse_args() -> argparse.Namespace:
 def main() -> int:
     args = _parse_args()
     log = lambda msg: print(msg, flush=True)
-    ang_cfg = _load_settings(args.settings).get("angle_estimation", {})
+    settings = _load_settings(args.settings)
+    ang_cfg = settings.get("angle_estimation", {})
+    peak_cfg = RangePeakDetectionConfig.from_settings(settings)
 
     capture_path = _resolve_capture_path(args.capture)
     if not (capture_path / "metadata.json").is_file() and not (capture_path / "session.json").is_file():
@@ -230,7 +221,7 @@ def main() -> int:
     log(f"  frames:   {len(paths)} @ {fps:.2f} fps")
     log(f"  OSC:      {args.osc_host}:{args.osc_port}")
     log(f"  ROI:      {args.roi_min:.2f}–{args.roi_max:.2f} m")
-    log(f"  SNR min:  {args.presence_threshold_db:.1f} dB")
+    log(f"  Peak SNR threshold: {peak_cfg.snr_threshold_db:.1f} dB (range_peak_detection)")
     if args.push_pull:
         log(
             f"  Push/pull: ON — nearest range within "
@@ -336,15 +327,11 @@ def main() -> int:
     frame_acc = None
 
     def _range_targets(frame_idx: int, frame: np.ndarray) -> list[tuple[float, float]]:
-        kw = dict(
-            min_secondary_snr_db=args.presence_threshold_db,
-            secondary_min_sep_m=args.secondary_min_range_sep_m,
-            secondary_max_sep_m=args.secondary_max_range_sep_m,
-        )
         if range_time_npz is not None:
-            return range_time_npz.targets_for_frame(frame_idx, **kw)
+            return range_time_npz.targets_for_frame(frame_idx, peak_cfg)
         assert range_time_processor is not None
-        return range_time_processor.targets_from_frame(frame, **kw)
+        out = range_time_processor.targets_from_frame(frame, peak_cfg)
+        return out if out is not None else []
 
     def _send_frame(frame_idx: int, frame: np.ndarray, est) -> None:
         nonlocal sent
@@ -353,7 +340,7 @@ def main() -> int:
             return
         t1 = targets[0]
         t2 = targets[1] if len(targets) > 1 else None
-        present = t1[1] >= args.presence_threshold_db
+        present = t1[1] >= peak_cfg.snr_threshold_db
 
         if (not args.emit_below_threshold) and not present:
             osc.send(args.presence_address, 0.0)

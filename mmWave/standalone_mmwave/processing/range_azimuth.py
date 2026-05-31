@@ -92,8 +92,8 @@ def collect_range_azimuth_frames(
     from background_model import (
         estimate_rd_background_from_capture,
         estimate_rda_background_from_capture,
-        frame_rd_power_db,
     )
+    from processing.rd_map import frame_to_rd_power_db
     from post_processing.rd_maps import _frame_times
 
     session = CaptureSession.open(Path(capture_path))
@@ -115,7 +115,7 @@ def collect_range_azimuth_frames(
     rda_list = []
     for i, p in enumerate(paths):
         raw = np.load(p)
-        rd_raw_list.append(frame_rd_power_db(raw, params))
+        rd_raw_list.append(frame_to_rd_power_db(raw, params))
         rda_list.append(compute_rda(frame_to_radar_cube(raw, params)))
         if show_progress and (i + 1) % 50 == 0:
             print(f"  loaded {i + 1}/{len(paths)} frames…", flush=True)
@@ -143,7 +143,7 @@ def collect_range_azimuth_frames(
             for p in bg_paths:
                 raw = np.load(p)
                 rda_b = compute_rda(frame_to_radar_cube(raw, params)) - bg_c
-                rd_b = frame_rd_power_db(raw, params) - bg
+                rd_b = frame_to_rd_power_db(raw, params) - bg
                 bg_ra_acc += range_azimuth_power_db_frame(
                     rda_b,
                     rd_b,
@@ -195,8 +195,8 @@ def build_range_azimuth_map(
     from background_model import (
         estimate_rd_background_from_capture,
         estimate_rda_background_from_capture,
-        frame_rd_power_db,
     )
+    from processing.rd_map import frame_to_rd_power_db
 
     session = CaptureSession.open(Path(capture_path))
     params = session.radar_params()
@@ -222,7 +222,7 @@ def build_range_azimuth_map(
         rda_list = []
         for p in paths_in:
             raw = np.load(p)
-            rd_raw_list.append(frame_rd_power_db(raw, params))
+            rd_raw_list.append(frame_to_rd_power_db(raw, params))
             rda_list.append(compute_rda(frame_to_radar_cube(raw, params)))
 
         if background_capture is not None:

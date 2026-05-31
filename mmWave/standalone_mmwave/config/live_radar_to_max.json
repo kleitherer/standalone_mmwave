@@ -16,8 +16,8 @@
     "presence_threshold_db": 0.0,
     "calibration_frames": 0,
     "declutter_mean_frames": 45,
-    "frame_average_count": 10,
-    "smooth_alpha": 0.2
+    "frame_average_count": 0,
+    "smooth_alpha": 0.0
   },
   "post_processing": {
     "rd_pipeline": "standalone",
@@ -69,6 +69,33 @@
     "fft_bins": 1024,
     "fov_deg": 60
   },
+  "range_peak_detection": {
+    "snr_threshold_db": 9.0,
+    "min_peak_separation_m": 0.4,
+    "max_peaks_per_frame": 2,
+    "require_local_maximum": true,
+    "secondary_min_range_sep_m": 0.4,
+    "secondary_max_range_sep_m": 0.7,
+    "analysis": {
+      "build_if_missing": true,
+      "max_frames": 0,
+      "save_peaks_npz": true,
+      "write_profile_panels": true
+    },
+    "plot": {
+      "dpi": 150,
+      "figsize_range_time": [12, 5],
+      "figsize_profiles": [12, 8],
+      "profile_count": 6,
+      "profile_frame_indices": [],
+      "heatmap_cmap": "viridis",
+      "peak_marker_color": "white",
+      "peak_marker_size": 10,
+      "peak_marker_edgecolor": "crimson",
+      "peak_marker_linewidth": 0.8,
+      "threshold_line_color": "crimson"
+    }
+  },
   "osc": {
     "mode_address": "/radar/mode",
     "live_mode_text": "Recording Live Data",
@@ -76,8 +103,6 @@
     "range_address": "/radar/range_m",
     "range2_address": "/radar/range2_m",
     "snr2_address": "/radar/snr2_db",
-    "secondary_min_range_sep_m": 0.3,
-    "secondary_max_range_sep_m": 1.0,
     "doppler_address": "/radar/doppler_mps",
     "angle_address": "/radar/angle_deg",
     "snr_address": "/radar/snr_db",
