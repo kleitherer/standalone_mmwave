@@ -144,6 +144,22 @@ def _declutter_slow_time(
     return rd
 
 
+def _taper_frame_edges(rd: np.ndarray, alpha: float) -> np.ndarray:
+    """
+    Tukey window along slow-time within each CPI before continuous STFT.
+
+    Fades the first/last chirps of every radar frame so per-frame declutter
+    steps are less abrupt when frames are concatenated. ``alpha=0`` disables.
+    Typical: 0.15–0.35 (fraction of each CPI tapered at each end).
+    """
+    if alpha <= 0:
+        return rd
+    from scipy.signal.windows import tukey
+
+    w = tukey(rd.shape[1], alpha=min(1.0, float(alpha))).astype(np.float32)
+    return rd * w[None, :, None]
+
+
 def _stft_uD(
     rd_bbox: np.ndarray,
     *,
@@ -217,6 +233,7 @@ def micro_doppler_from_cube(
     zero_doppler_guard_mps: float = 0.0,
     mti: bool = False,
     normalize_columns: bool = True,
+    frame_taper_alpha: float = 0.0,
 ) -> np.ndarray:
     rda = np.asarray(radar_cube, dtype=np.complex64)
     chirp_rate_hz = float(n_slow * fps)
@@ -235,6 +252,9 @@ def micro_doppler_from_cube(
 
     if mti:
         rd_bbox = _mti_slow_time(rd_bbox)
+
+    if frame_taper_alpha > 0 and stft_mode == "continuous":
+        rd_bbox = _taper_frame_edges(rd_bbox, frame_taper_alpha)
 
     r_lo, r_hi = range_gate_m
     r_mask = _range_bin_mask(rd_bbox.shape[-1], range_res, r_lo, r_hi)

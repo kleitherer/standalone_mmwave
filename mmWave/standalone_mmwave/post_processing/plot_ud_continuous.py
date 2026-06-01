@@ -73,6 +73,9 @@ def load_radar_cube_capture(capture_dir: Path) -> np.ndarray:
 
 
 from post_processing.capture_meta import roi_from_metadata
+
+
+def save_uD_plot(
     uD: np.ndarray,
     *,
     out_png: Path,
@@ -135,6 +138,13 @@ def main() -> int:
         type=float,
         default=0.5,
         help="EMA clutter time constant in seconds (ema mode)",
+    )
+    p.add_argument(
+        "--frame-taper",
+        type=float,
+        default=0.0,
+        metavar="ALPHA",
+        help="Tukey edge taper per CPI before continuous STFT (0=off; try 0.2–0.35 for per_frame stripes)",
     )
     p.add_argument(
         "--highpass-hz",
@@ -238,6 +248,7 @@ def main() -> int:
         zero_doppler_guard_mps=guard_mps,
         mti=args.mti,
         normalize_columns=not args.no_normalize,
+        frame_taper_alpha=args.frame_taper,
     )
     uD_axis = uD_axis_mps(n_uD_fft, velocity_max)
     bins_ps = uD_bins_per_second(
@@ -263,6 +274,7 @@ def main() -> int:
         f"  declutter={args.declutter} stft={args.stft_mode} "
         f"antenna={args.antenna} gate={range_gate} "
         f"highpass={highpass_hz}Hz notch={zero_notch}bins"
+        + (f" frame_taper={args.frame_taper}" if args.frame_taper > 0 else "")
         + (f" guard={guard_mps}m/s" if guard_mps > 0 else "")
         + (" mti=1" if args.mti else "")
     )

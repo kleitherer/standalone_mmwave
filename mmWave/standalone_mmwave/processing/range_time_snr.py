@@ -10,7 +10,11 @@ import numpy as np
 
 from background_model import estimate_rd_background_from_capture
 from processing.rd_map import frame_to_rd_power_db
-from processing.range_peak_detection import RangePeakDetectionConfig, osc_targets_from_profile
+from processing.range_peak_detection import (
+    RangePeakDetectionConfig,
+    osc_targets_from_profile,
+    peaks_from_profile,
+)
 from processing.rda import range_doppler_axes
 
 
@@ -114,6 +118,15 @@ class RangeTimeSnrNpz:
             snr_threshold_db=thr,
         )
 
+    def peaks_for_frame(
+        self,
+        frame_idx: int,
+        peak_cfg: RangePeakDetectionConfig,
+    ) -> list[tuple[float, float]]:
+        if frame_idx < 0 or frame_idx >= self.snr_db.shape[0]:
+            return []
+        return peaks_from_profile(self.snr_db[frame_idx], self.range_m, peak_cfg)
+
     def targets_for_frame(
         self,
         frame_idx: int,
@@ -188,11 +201,10 @@ class RangeTimeSnrProcessor:
     def frames_seen(self) -> int:
         return self._frames_seen
 
-    def targets_from_frame(
+    def _profile_from_frame(
         self,
         frame_int16: np.ndarray,
-        peak_cfg: RangePeakDetectionConfig,
-    ) -> list[tuple[float, float]] | None:
+    ) -> np.ndarray | None:
         rd_raw = frame_to_rd_power_db(
             frame_int16,
             self.params,
@@ -214,7 +226,30 @@ class RangeTimeSnrProcessor:
 
         rd_declutter = rd_raw - self._bg
         if not np.any(self._r_mask):
-            return []
+            return np.array([], dtype=np.float64)
         rd_roi = rd_declutter[:, self._r_mask]
-        profile = range_time_snr_along_range(rd_roi)
+        return range_time_snr_along_range(rd_roi)
+
+    def peaks_from_frame(
+        self,
+        frame_int16: np.ndarray,
+        peak_cfg: RangePeakDetectionConfig,
+    ) -> list[tuple[float, float]] | None:
+        profile = self._profile_from_frame(frame_int16)
+        if profile is None:
+            return None
+        if profile.size == 0:
+            return []
+        return peaks_from_profile(profile, self._range_bins_m, peak_cfg)
+
+    def targets_from_frame(
+        self,
+        frame_int16: np.ndarray,
+        peak_cfg: RangePeakDetectionConfig,
+    ) -> list[tuple[float, float]] | None:
+        profile = self._profile_from_frame(frame_int16)
+        if profile is None:
+            return None
+        if profile.size == 0:
+            return []
         return osc_targets_from_profile(profile, self._range_bins_m, peak_cfg)

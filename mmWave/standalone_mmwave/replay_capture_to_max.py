@@ -30,10 +30,18 @@ if str(_ROOT) not in sys.path:
 
 from background_model import estimate_rd_background_from_capture
 from capture_store import CaptureSession
-from live_radar_to_max import OscSender, _load_settings, _resolve_capture_path
-from processing.range_peak_detection import RangePeakDetectionConfig
+from gesture_recognition.osc import make_publisher
+from gesture_recognition.peaks import RangePeakDetectionConfig
+from gesture_recognition.mode import (
+    active_gesture_mode,
+    describe_gesture_mode,
+    make_gesture_processor,
+    make_osc_gesture_limiter,
+)
+from gesture_recognition.publisher import publish_radar_frame
+from gesture_recognition.status import format_status_line
+from live_radar_to_max import _load_settings, _resolve_capture_path
 from processing.range_time_snr import RangeTimeSnrNpz, RangeTimeSnrProcessor
-from processing.target_detect import GESTURE_NONE, LiveRadarTargetProcessor
 
 
 def _parse_args() -> argparse.Namespace:
@@ -189,8 +197,10 @@ def main() -> int:
     args = _parse_args()
     log = lambda msg: print(msg, flush=True)
     settings = _load_settings(args.settings)
-    ang_cfg = settings.get("angle_estimation", {})
     peak_cfg = RangePeakDetectionConfig.from_settings(settings)
+    gesture_processor = make_gesture_processor(settings)
+    gesture_mode = active_gesture_mode(settings)
+    osc_gesture_limiter = make_osc_gesture_limiter(settings)
 
     capture_path = _resolve_capture_path(args.capture)
     if not (capture_path / "metadata.json").is_file() and not (capture_path / "session.json").is_file():
@@ -222,13 +232,7 @@ def main() -> int:
     log(f"  OSC:      {args.osc_host}:{args.osc_port}")
     log(f"  ROI:      {args.roi_min:.2f}–{args.roi_max:.2f} m")
     log(f"  Peak SNR threshold: {peak_cfg.snr_threshold_db:.1f} dB (range_peak_detection)")
-    if args.push_pull:
-        log(
-            f"  Push/pull: ON — nearest range within "
-            f"{args.push_pull_snr_within_db:.1f} dB of max SNR"
-        )
-        if args.push_pull_range_derivative:
-            log("  Push/pull: d(range)/dt → /radar/doppler_mps (temporary)")
+    log(f"  {describe_gesture_mode(settings)}")
     log(f"  Avg:      {max(1, int(args.frame_average_count))} frame(s)")
     if args.fast:
         log("  Timing:   as fast as possible")
@@ -276,23 +280,8 @@ def main() -> int:
             max_frames=int(args.declutter_mean_frames),
         )
 
-    processor = LiveRadarTargetProcessor(
-        params,
-        range_gate_m=(args.roi_min, args.roi_max),
-        clutter_window=args.calibration_frames,
-        background_rd_mean=background_rd_mean,
-        smooth_alpha=args.smooth_alpha,
-        angle_fft_bins=int(ang_cfg.get("fft_bins", 128)),
-        angle_fov_deg=float(ang_cfg.get("fov_deg", 90.0)),
-        presence_threshold_db=args.presence_threshold_db,
-        push_pull_mode=args.push_pull,
-        push_pull_snr_within_db=args.push_pull_snr_within_db,
-        push_pull_use_range_derivative_for_doppler=args.push_pull_range_derivative,
-        gesture_min_peak_snr_db=args.gesture_min_peak_snr_db,
-        gesture_min_range_sep_m=args.gesture_min_range_sep_m,
-        gesture_max_range_sep_m=args.gesture_max_range_sep_m,
-        gesture_min_velocity_mps=args.gesture_min_velocity_mps,
-    )
+    frame_dt_s = max(frame_time_ms / 1000.0, 1e-6)
+
     range_time_processor = None
     if range_time_npz is None:
         range_time_processor = RangeTimeSnrProcessor.from_capture(
@@ -304,10 +293,10 @@ def main() -> int:
             background_capture=args.background_capture,
             background_max_frames=args.background_max_frames,
         )
-    osc = OscSender(args.osc_host, args.osc_port)
+    publisher = make_publisher(args, settings)
     mode_text = f"{args.replay_mode_text} ({capture_path.name})"
-    osc.send_text(args.mode_address, mode_text)
-    log(f"  Mode → Max: {mode_text!r}  ({args.mode_address})")
+    publisher.send_mode(mode_text)
+    log(f"  Mode → Max: {mode_text!r}  ({publisher.addresses.mode})")
 
     stop = False
 
@@ -326,58 +315,25 @@ def main() -> int:
     frame_hist: deque = deque(maxlen=frame_avg_count)
     frame_acc = None
 
-    def _range_targets(frame_idx: int, frame: np.ndarray) -> list[tuple[float, float]]:
-        if range_time_npz is not None:
-            return range_time_npz.targets_for_frame(frame_idx, peak_cfg)
-        assert range_time_processor is not None
-        out = range_time_processor.targets_from_frame(frame, peak_cfg)
-        return out if out is not None else []
-
-    def _send_frame(frame_idx: int, frame: np.ndarray, est) -> None:
+    def _send_frame(frame_idx: int, frame: np.ndarray):
         nonlocal sent
-        targets = _range_targets(frame_idx, frame)
-        if not targets:
-            return
-        t1 = targets[0]
-        t2 = targets[1] if len(targets) > 1 else None
-        present = t1[1] >= peak_cfg.snr_threshold_db
-
-        if (not args.emit_below_threshold) and not present:
-            osc.send(args.presence_address, 0.0)
-            if not args.no_gesture and args.gesture_address:
-                osc.send_text(args.gesture_address, GESTURE_NONE)
-            return
-
-        r1, snr1 = t1
-        osc.send(args.range_address, r1)
-        if not args.no_snr:
-            osc.send(args.snr_address, snr1)
-        if t2 is not None:
-            osc.send(args.range2_address, t2[0])
-            if not args.no_snr:
-                osc.send(args.snr2_address, t2[1])
-        if est is not None:
-            if not args.no_doppler:
-                osc.send(args.doppler_address, est.doppler_mps)
-            if not args.no_angle:
-                osc.send(args.angle_address, est.angle_deg)
-        osc.send(args.presence_address, 1.0 if present else 0.0)
-        if est is not None and not args.no_gesture and args.gesture_address:
-            osc.send_text(args.gesture_address, est.gesture)
-        if args.bundle_address:
-            r2, snr2 = t2 if t2 is not None else (0.0, 0.0)
-            if est is not None:
-                osc.send_bundle(
-                    args.bundle_address,
-                    r1,
-                    est.doppler_mps,
-                    est.angle_deg,
-                    snr1,
-                )
-            else:
-                osc.send_bundle(args.bundle_address, r1, snr1, r2[0], r2[1])
-        sent += 1
-        return r1, snr1, t2
+        if range_time_npz is not None:
+            peaks = range_time_npz.peaks_for_frame(frame_idx, peak_cfg)
+        else:
+            peaks = range_time_processor.peaks_from_frame(frame, peak_cfg)
+        result = publish_radar_frame(
+            publisher,
+            peak_cfg,
+            peaks,
+            gesture_processor,
+            frame_dt_s,
+            osc_gesture_limiter,
+        )
+        if result is None:
+            return None
+        if result.published:
+            sent += 1
+        return result
 
     try:
         run_start = time.monotonic()
@@ -413,28 +369,23 @@ def main() -> int:
                     frame_acc += frame_hist[-1]
                     frame = np.rint(frame_acc / len(frame_hist)).astype(frame.dtype, copy=False)
 
-                est = processor.update(frame)
-                result = _send_frame(i, frame, est)
+                result = _send_frame(i, frame)
                 if result is None:
                     continue
-                r1, snr1, t2 = result
 
                 now = time.monotonic()
-                if now - last_status >= args.status_interval:
+                if now - last_status >= args.status_interval and result.published:
                     elapsed = now - t0
                     rate = sent / max(elapsed, 1e-6)
-                    t2_str = (
-                        f"R2={t2[0]:.2f}m SNR={t2[1]:.1f}dB"
-                        if t2 is not None
-                        else "R2=—"
-                    )
-                    dop = est.doppler_mps if est is not None else 0.0
-                    ang = est.angle_deg if est is not None else 0.0
-                    gest = est.gesture if est is not None else GESTURE_NONE
                     log(
-                        f"  {elapsed:5.1f}s  frame {i+1}/{len(paths)}  osc={sent} ({rate:.1f}/s)  "
-                        f"R={r1:.2f}m SNR={snr1:.1f}dB  {t2_str}  "
-                        f"V={dop:+.2f}m/s  A={ang:+.1f}°  gesture={gest}"
+                        format_status_line(
+                            result,
+                            elapsed_s=elapsed,
+                            osc_sent=sent,
+                            osc_rate_hz=rate,
+                            frame_label=f"frame {i + 1}/{len(paths)}",
+                            gesture_mode=gesture_mode,
+                        )
                     )
                     last_status = now
 
@@ -442,42 +393,25 @@ def main() -> int:
                 break
             if duration_limit > 0 and (time.monotonic() - run_start) >= duration_limit:
                 break
-            # Reset processor calibration only if we used inline calib (no fixed bg)
-            if background_rd_mean is None:
-                processor = LiveRadarTargetProcessor(
+            gesture_processor.reset()
+            osc_gesture_limiter.reset()
+            if background_rd_mean is None and range_time_npz is None:
+                range_time_processor = RangeTimeSnrProcessor.from_capture(
+                    capture_path,
                     params,
                     range_gate_m=(args.roi_min, args.roi_max),
-                    clutter_window=args.calibration_frames,
-                    background_rd_mean=None,
-                    smooth_alpha=args.smooth_alpha,
-                    angle_fft_bins=int(ang_cfg.get("fft_bins", 128)),
-                    angle_fov_deg=float(ang_cfg.get("fov_deg", 90.0)),
-                    presence_threshold_db=args.presence_threshold_db,
-                    push_pull_mode=args.push_pull,
-                    push_pull_snr_within_db=args.push_pull_snr_within_db,
-                    push_pull_use_range_derivative_for_doppler=args.push_pull_range_derivative,
-                    gesture_min_peak_snr_db=args.gesture_min_peak_snr_db,
-                    gesture_min_range_sep_m=args.gesture_min_range_sep_m,
-                    gesture_max_range_sep_m=args.gesture_max_range_sep_m,
-                    gesture_min_velocity_mps=args.gesture_min_velocity_mps,
+                    declutter_mean_frames=args.declutter_mean_frames,
+                    limiter=args.range_time_limiter,
+                    background_capture=args.background_capture,
+                    background_max_frames=args.background_max_frames,
                 )
-                if range_time_npz is None:
-                    range_time_processor = RangeTimeSnrProcessor.from_capture(
-                        capture_path,
-                        params,
-                        range_gate_m=(args.roi_min, args.roi_max),
-                        declutter_mean_frames=args.declutter_mean_frames,
-                        limiter=args.range_time_limiter,
-                        background_capture=args.background_capture,
-                        background_max_frames=args.background_max_frames,
-                    )
-                frame_hist.clear()
-                frame_acc = None
+            frame_hist.clear()
+            frame_acc = None
 
     except KeyboardInterrupt:
         log("\nStopped (Ctrl+C).")
     finally:
-        osc.close()
+        publisher.sender.close()
 
     log(f"Sent {sent} OSC updates.")
     return 0 if sent > 0 else 1

@@ -11,103 +11,18 @@ from processing.angle_estimate import angle_deg_at_rd_cell
 from processing.cube import frame_to_radar_cube
 from processing.rda import compute_rda, range_doppler_axes, rda_power_db
 
-GESTURE_NONE = "none"
-GESTURE_SINGLE = "single"
-GESTURE_PUSH = "push"
-GESTURE_PULL = "pull"
-# Legacy alias (two-peak RD detector)
-GESTURE_PUSH_PULL = "push_pull"
-
-
-def rd_roi_snr_map(rd_roi: np.ndarray) -> np.ndarray:
-    """Decluttered SNR (dB): cell power minus ROI median."""
-    noise_floor = float(np.median(rd_roi))
-    return rd_roi.astype(np.float64) - noise_floor
-
-
-def _range_profile_peaks(snr_along_range: np.ndarray, thresh: float) -> list[int]:
-    """Local maxima along range (indices into the range axis)."""
-    peaks: list[int] = []
-    n = int(snr_along_range.size)
-    for i in range(n):
-        v = float(snr_along_range[i])
-        if v < thresh:
-            continue
-        left = float(snr_along_range[i - 1]) if i > 0 else -np.inf
-        right = float(snr_along_range[i + 1]) if i + 1 < n else -np.inf
-        if v >= left and v >= right:
-            peaks.append(i)
-    return peaks
-
-
-def classify_gesture_from_rd(
-    rd_roi: np.ndarray,
-    range_bins_m: np.ndarray,
-    *,
-    snr_within_db_of_max: float = 4.0,
-    min_peak_snr_db: float = 5.0,
-    min_range_sep_m: float = 0.2,
-    max_range_sep_m: float = 1.5,
-) -> str:
-    """
-    Label the current frame's RD pattern.
-
-    Push/pull: two strong reflectors at **similar range** (torso + arms in the same
-    depth band). Collapse Doppler with a per-range max, find local range peaks above
-  ``max_snr - snr_within_db``, and require two peaks separated by
-    ``[min_range_sep_m, max_range_sep_m]``.
-    """
-    snr_map = rd_roi_snr_map(rd_roi)
-    max_snr = float(np.max(snr_map))
-    if max_snr < float(min_peak_snr_db):
-        return GESTURE_NONE
-
-    snr_along_range = np.max(snr_map, axis=0)
-    thresh = max(max_snr - float(snr_within_db_of_max), float(min_peak_snr_db))
-    peaks = _range_profile_peaks(snr_along_range, thresh)
-    if len(peaks) < 2:
-        return GESTURE_SINGLE if peaks else GESTURE_NONE
-
-    ranges = range_bins_m[np.asarray(peaks, dtype=np.intp)]
-    min_sep = float(min_range_sep_m)
-    max_sep = float(max_range_sep_m)
-    for i in range(len(ranges)):
-        for j in range(i + 1, len(ranges)):
-            sep = abs(float(ranges[i]) - float(ranges[j]))
-            if min_sep <= sep <= max_sep:
-                return GESTURE_PUSH_PULL
-    return GESTURE_SINGLE
-
-
-def classify_gesture_from_velocity(
-    velocity_mps: float,
-    *,
-    min_velocity_mps: float = 0.15,
-) -> str:
-    """
-    Push/pull from range rate (d(range)/dt on ``doppler_mps`` when enabled).
-
-    Positive velocity → target moving farther (``push``).
-    Negative velocity → target moving closer (``pull``).
-    """
-    v = float(velocity_mps)
-    thr = float(min_velocity_mps)
-    if v > thr:
-        return GESTURE_PUSH
-    if v < -thr:
-        return GESTURE_PULL
-    return GESTURE_NONE
-
-
-def gesture_settings_kwargs(settings: dict) -> dict[str, float]:
-    """Processor kwargs from ``gesture`` block in live_radar_to_max.json."""
-    gesture_cfg = settings.get("gesture", {})
-    return {
-        "gesture_min_peak_snr_db": float(gesture_cfg.get("min_peak_snr_db", 5.0)),
-        "gesture_min_range_sep_m": float(gesture_cfg.get("min_range_sep_m", 0.2)),
-        "gesture_max_range_sep_m": float(gesture_cfg.get("max_range_sep_m", 1.5)),
-        "gesture_min_velocity_mps": float(gesture_cfg.get("min_velocity_mps", 0.15)),
-    }
+from gesture_recognition.gesture import (
+    GESTURE_NONE,
+    GESTURE_PULL,
+    GESTURE_PUSH,
+    GESTURE_PUSH_PULL,
+    GESTURE_SINGLE,
+    classify_gesture_from_rd,
+    classify_gesture_from_velocity,
+    gesture_settings_kwargs,
+    rd_roi_snr_map,
+)
+from gesture_recognition.peaks import _local_maxima_indices as _range_profile_peaks
 
 
 def pick_rd_peak(

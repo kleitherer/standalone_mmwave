@@ -22,7 +22,6 @@ from __future__ import annotations
 import argparse
 import json
 import signal
-import socket
 import sys
 import time
 from collections import deque
@@ -34,30 +33,23 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from background_model import estimate_rd_background_from_capture
-from processing.osc_utils import build_osc_message
-from processing.range_peak_detection import RangePeakDetectionConfig
+from gesture_recognition.osc import OscSender, make_publisher
+from gesture_recognition.peaks import RangePeakDetectionConfig
+from gesture_recognition.mode import (
+    active_gesture_mode,
+    describe_gesture_mode,
+    make_gesture_processor,
+    make_osc_gesture_limiter,
+)
+from gesture_recognition.publisher import publish_radar_frame
+from gesture_recognition.status import format_status_line
 from processing.range_time_snr import RangeTimeSnrProcessor
 from radar_config import RadarConfig
 from radar_receiver import RadarReceiver
 
 
-class OscSender:
-    def __init__(self, host: str, port: int) -> None:
-        self._dest = (host, port)
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-    def send(self, address: str, value: float) -> None:
-        self._sock.sendto(build_osc_message(address, value), self._dest)
-
-    def send_bundle(self, address: str, *values: float) -> None:
-        self._sock.sendto(build_osc_message(address, *values), self._dest)
-
-    def send_text(self, address: str, text: str) -> None:
-        """OSC string argument for Max [route] / [text] labels."""
-        self._sock.sendto(build_osc_message(address, text), self._dest)
-
-    def close(self) -> None:
-        self._sock.close()
+# Re-export for replay_capture_to_max.py
+__all__ = ["OscSender", "_load_settings", "_resolve_capture_path"]
 
 
 class CaptureWriter:
@@ -307,6 +299,9 @@ def main() -> int:
     settings = _load_settings(args.settings)
     proc_cfg = settings.get("processing", {})
     peak_cfg = RangePeakDetectionConfig.from_settings(settings)
+    gesture_processor = make_gesture_processor(settings)
+    gesture_mode = active_gesture_mode(settings)
+    osc_gesture_limiter = make_osc_gesture_limiter(settings)
     if args.background_capture:
         args.background_capture = _resolve_capture_path(args.background_capture)
 
@@ -325,6 +320,16 @@ def main() -> int:
     log(f"  OSC:     {args.osc_host}:{args.osc_port}")
     log(f"  ROI:     {args.roi_min:.2f}–{args.roi_max:.2f} m")
     log(f"  Peak SNR threshold: {peak_cfg.snr_threshold_db:.1f} dB (range_peak_detection)")
+    log(f"  Gesture: {gesture_mode}")
+    if gesture_mode == "config1":
+        from gesture_recognition.tracker import TrackingConfig
+
+        track_cfg = TrackingConfig.from_settings(settings)
+        if track_cfg.body_calibration_s > 0:
+            log(
+                f"  Body calib: stand still {track_cfg.body_calibration_s:.0f}s "
+                f"(id=1 learns your range + SNR)"
+            )
     log(f"  Avg:     {max(1, int(args.frame_average_count))} frame(s)")
     if args.duration_sec and args.duration_sec > 0:
         log(f"  Duration:{args.duration_sec:.1f}s (auto-stop)")
@@ -383,9 +388,12 @@ def main() -> int:
         else:
             log(f"  Range SNR: no declutter (limiter={'on' if args.range_time_limiter else 'off'})")
 
-    osc = OscSender(args.osc_host, args.osc_port)
-    osc.send_text(args.mode_address, args.live_mode_text)
-    log(f"  Mode → Max: {args.live_mode_text!r}  ({args.mode_address})")
+    frame_dt_s = max(float(params.get("frame_time", 22.22)) / 1000.0, 1e-6)
+    log(f"  {describe_gesture_mode(settings)}")
+
+    publisher = make_publisher(args, settings)
+    publisher.send_mode(args.live_mode_text)
+    log(f"  Mode → Max: {args.live_mode_text!r}  ({publisher.addresses.mode})")
 
     receiver = RadarReceiver(
         cfg_lines,
@@ -519,8 +527,8 @@ def main() -> int:
             if cap_writer is not None:
                 cap_writer.write_frame(capture_frame)
 
-            targets = range_time_processor.targets_from_frame(capture_frame, peak_cfg)
-            if targets is None:
+            peaks = range_time_processor.peaks_from_frame(capture_frame, peak_cfg)
+            if peaks is None:
                 now_diag = time.monotonic()
                 if now_diag - last_diag >= 2.0:
                     calib_n = range_time_processor.frames_seen
@@ -532,42 +540,31 @@ def main() -> int:
                     last_diag = now_diag
                 continue
 
-            t1 = targets[0] if len(targets) > 0 else None
-            t2 = targets[1] if len(targets) > 1 else None
-            present = t1 is not None and t1[1] >= peak_cfg.snr_threshold_db
-
-            if (not args.emit_below_threshold) and not present:
-                osc.send(args.presence_address, 0.0)
+            result = publish_radar_frame(
+                publisher,
+                peak_cfg,
+                peaks,
+                gesture_processor,
+                frame_dt_s,
+                osc_gesture_limiter,
+            )
+            if result is None:
                 continue
-
-            r1, snr1 = t1 if t1 is not None else (0.0, 0.0)
-            osc.send(args.range_address, r1)
-            if not args.no_snr:
-                osc.send(args.snr_address, snr1)
-            if t2 is not None:
-                osc.send(args.range2_address, t2[0])
-                if not args.no_snr:
-                    osc.send(args.snr2_address, t2[1])
-            osc.send(args.presence_address, 1.0 if present else 0.0)
-
-            if args.bundle_address:
-                r2, snr2 = t2 if t2 is not None else (0.0, 0.0)
-                osc.send_bundle(args.bundle_address, r1, snr1, r2, snr2)
-
-            sent += 1
+            if result.published:
+                sent += 1
 
             now = time.monotonic()
             if now - last_status >= args.status_interval:
                 elapsed = now - t0
                 rate = sent / max(elapsed, 1e-6)
-                t2_str = (
-                    f"T2: R={t2[0]:.2f}m SNR={t2[1]:.1f}dB"
-                    if t2 is not None
-                    else "T2: —"
-                )
                 log(
-                    f"  {elapsed:5.1f}s  osc={sent} ({rate:.1f}/s)  "
-                    f"T1: R={r1:.2f}m SNR={snr1:.1f}dB  |  {t2_str}"
+                    format_status_line(
+                        result,
+                        elapsed_s=elapsed,
+                        osc_sent=sent,
+                        osc_rate_hz=rate,
+                        gesture_mode=gesture_mode,
+                    )
                 )
                 last_status = now
 
@@ -575,7 +572,7 @@ def main() -> int:
         log("\nStopped (Ctrl+C).")
     finally:
         receiver.close()
-        osc.close()
+        publisher.sender.close()
 
     log(
         f"Sent {sent} OSC updates. "

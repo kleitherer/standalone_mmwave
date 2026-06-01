@@ -12,7 +12,7 @@
   },
   "processing": {
     "roi_min_m": 0.3,
-    "roi_max_m": 3.8,
+    "roi_max_m": 3.4,
     "presence_threshold_db": 0.0,
     "calibration_frames": 0,
     "declutter_mean_frames": 45,
@@ -40,16 +40,31 @@
     "rd_display_upsample": 2,
     "rd_interpolation": "bilinear"
   },
-  "push_pull": {
-    "enabled": true,
-    "snr_within_db_of_max": 4.0,
-    "use_range_derivative_for_doppler": true
-  },
   "gesture": {
-    "min_peak_snr_db": 5.0,
-    "min_range_sep_m": 0.2,
-    "max_range_sep_m": 1.5,
-    "min_velocity_mps": 0.15
+    "mode": "config1",
+    "config1": {
+      "enabled": true,
+      "max_tracks": 2,
+      "associate_gate_m": 0.15,
+      "max_range_jump_m": 0.60,
+      "min_hand_ahead_m": 0.3,
+      "max_hand_ahead_m": 0.55,
+      "history_frames": 12,
+      "max_missed_frames": 5,
+      "min_velocity_mps": 0.15,
+      "gesture_confirm_frames": 3,
+      "body_slower_than_hand": true,
+      "body_hand_velocity_margin_mps": 0.05,
+      "body_calibration_s": 0,
+      "body_calibration_max_velocity_mps": 0.10,
+      "body_anchor_blend": 0.5,
+      "body_snr_margin_db": 6.0,
+      "body_max_velocity_for_gesture_mps": 0.0
+    },
+    "config2": {
+      "min_velocity_mps": 0.10,
+      "gesture_confirm_frames": 2
+    }
   },
   "run": {
     "duration_sec": 30
@@ -71,11 +86,9 @@
   },
   "range_peak_detection": {
     "snr_threshold_db": 15.0,
-    "min_peak_separation_m": 0.4,
-    "max_peaks_per_frame": 2,
+    "min_peak_separation_m": 0.3,
+    "max_peaks_per_frame": 3,
     "require_local_maximum": true,
-    "secondary_min_range_sep_m": 0.4,
-    "secondary_max_range_sep_m": 0.7,
     "analysis": {
       "build_if_missing": true,
       "max_frames": 0,
@@ -107,6 +120,7 @@
     "angle_address": "/radar/angle_deg",
     "snr_address": "/radar/snr_db",
     "presence_address": "/radar/presence",
-    "gesture_address": "/radar/gesture"
+    "gesture_address": "/radar/gesture",
+    "send_angle": false
   }
 }

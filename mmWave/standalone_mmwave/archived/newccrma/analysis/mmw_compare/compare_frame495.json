@@ -1,0 +1,24 @@
+{
+  "adc_standalone_vs_mmw_pair_iq": {
+    "max_abs": 93871.625,
+    "mean_abs": 50056.65234375,
+    "match": false
+  },
+  "cube_standalone_virt_vs_mmw5d": {
+    "max_abs": 0.0,
+    "match": true
+  },
+  "rd_standalone_vs_mmw_port": {
+    "max_abs_db": 1.52587890625e-05,
+    "match": true
+  },
+  "rd_mmw_port_vs_mmw_pair_iq": {
+    "max_abs_db": 62.132301330566406
+  },
+  "decode_data_standalone_lvds": {
+    "error": "cannot reshape array of size 98304 into shape (32,3,4,0)"
+  },
+  "decode_data_mmw_pair": {
+    "error": "cannot reshape array of size 98304 into shape (32,3,4,0)"
+  }
+}

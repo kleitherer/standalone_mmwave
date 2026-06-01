@@ -25,6 +25,8 @@ if str(_ROOT) not in sys.path:
 
 from post_processing.processing_config import ProcessingConfig, resolve_capture_range_gate
 from processing.range_peak_detection import RangePeakDetectionConfig, detect_peaks_volume
+from gesture_recognition.mode import active_gesture_mode, simulate_gesture_volume
+from gesture_recognition.tracker import TrackingConfig
 
 _DEFAULT_CONFIG = _ROOT / "config" / "live_radar_to_max.json"
 
@@ -116,6 +118,134 @@ def _profile_frame_indices(n_frames: int, cfg: RangePeakDetectionConfig) -> list
     return [int(round(i * (n_frames - 1) / (n - 1))) for i in range(n)]
 
 
+def _frame_dt_s(time_s: np.ndarray) -> float:
+    if len(time_s) >= 2:
+        dts = np.diff(time_s.astype(np.float64))
+        dts = dts[dts > 0]
+        if dts.size:
+            return float(np.median(dts))
+    return 1.0 / 45.0
+
+
+_GESTURE_MARKERS = {
+    "none": "o",
+    "single": "o",
+    "push": "^",
+    "pull": "v",
+    "push_pull": "D",
+}
+
+
+def _plot_track_positions(
+    ax,
+    *,
+    time_s: np.ndarray,
+    track_range: np.ndarray,
+    track_id: int,
+    color: str,
+    marker_size: float,
+    alpha: float = 0.95,
+) -> None:
+    """Track path as circles only (gestures plotted separately)."""
+    valid = np.isfinite(track_range)
+    if not np.any(valid):
+        return
+    ax.scatter(
+        time_s[valid],
+        track_range[valid],
+        s=marker_size,
+        c=color,
+        marker="o",
+        edgecolors="white",
+        linewidths=0.6,
+        alpha=alpha,
+        zorder=3 + track_id,
+    )
+
+
+def _plot_gesture_layers(
+    ax,
+    *,
+    time_s: np.ndarray,
+    track_range: np.ndarray,
+    osc_gesture: np.ndarray,
+    raw_gesture: np.ndarray,
+    zorder_base: int = 6,
+) -> None:
+    """Raw velocity label (hollow) vs confirmed OSC emit (solid, larger)."""
+    valid = np.isfinite(track_range)
+    if not np.any(valid):
+        return
+
+    t = time_s[valid]
+    r = track_range[valid]
+    osc = osc_gesture[valid]
+    raw = raw_gesture[valid]
+
+    for gest, marker in (("push", "^"), ("pull", "v")):
+        pending = (raw == gest) & (osc != gest)
+        if np.any(pending):
+            ax.scatter(
+                t[pending],
+                r[pending],
+                s=55,
+                facecolors="none",
+                edgecolors="#cccccc",
+                marker=marker,
+                linewidths=1.0,
+                alpha=0.85,
+                zorder=zorder_base,
+            )
+        emitted = osc == gest
+        if np.any(emitted):
+            ax.scatter(
+                t[emitted],
+                r[emitted],
+                s=120,
+                c="#f1c40f",
+                marker=marker,
+                edgecolors="white",
+                linewidths=1.2,
+                alpha=1.0,
+                zorder=zorder_base + 1,
+            )
+
+
+def _plot_tracked_targets(
+    ax,
+    *,
+    time_s: np.ndarray,
+    track_range: np.ndarray,
+    track_gesture: np.ndarray,
+    track_id: int,
+    color: str,
+    marker_size: float,
+) -> None:
+    valid = np.isfinite(track_range)
+    if not np.any(valid):
+        return
+
+    t = time_s[valid]
+    r = track_range[valid]
+    gestures = track_gesture[valid]
+
+    for gest, marker in _GESTURE_MARKERS.items():
+        mask = gestures == gest
+        if not np.any(mask):
+            continue
+        ax.scatter(
+            t[mask],
+            r[mask],
+            s=marker_size,
+            c=color,
+            marker=marker,
+            edgecolors="white",
+            linewidths=0.6,
+            alpha=0.95,
+            zorder=4 + track_id,
+        )
+
+
 def _plot_range_time_peaks(
     *,
     snr_db: np.ndarray,
@@ -125,6 +255,8 @@ def _plot_range_time_peaks(
     session_id: str,
     cfg: RangePeakDetectionConfig,
     out_path: Path,
+    tracking=None,
+    gesture_mode: str = "config1",
 ) -> None:
     import matplotlib
 
@@ -163,21 +295,163 @@ def _plot_range_time_peaks(
         ax.scatter(
             t_pts,
             r_pts,
-            s=cfg.peak_marker_size,
+            s=max(4.0, cfg.peak_marker_size * 0.45),
             c=cfg.peak_marker_color,
             edgecolors=cfg.peak_marker_edgecolor,
-            linewidths=cfg.peak_marker_linewidth,
-            marker="o",
-            zorder=3,
-            label=f"peaks ≥ {thr:.1f} dB",
+            linewidths=0.4,
+            marker=".",
+            alpha=0.35,
+            zorder=2,
+            label=f"raw peaks ≥ {thr:.1f} dB",
         )
-        ax.legend(loc="upper right", fontsize=9)
+
+    dual_track = False
+    if tracking is not None:
+        ms = max(cfg.peak_marker_size * 1.8, 14.0)
+        dual_track = np.any(np.isfinite(tracking.track2_range_m))
+        raw_g = getattr(tracking, "raw_gesture", None)
+        if raw_g is None:
+            raw_g = np.full_like(tracking.gesture, "none", dtype=object)
+
+        if dual_track:
+            _plot_track_positions(
+                ax,
+                time_s=time_s,
+                track_range=tracking.track1_range_m,
+                track_id=1,
+                color="#1f77b4",
+                marker_size=ms,
+            )
+            _plot_track_positions(
+                ax,
+                time_s=time_s,
+                track_range=tracking.track2_range_m,
+                track_id=2,
+                color="#ff7f0e",
+                marker_size=ms,
+            )
+            _plot_gesture_layers(
+                ax,
+                time_s=time_s,
+                track_range=tracking.track2_range_m,
+                osc_gesture=tracking.gesture,
+                raw_gesture=raw_g,
+            )
+        else:
+            _plot_track_positions(
+                ax,
+                time_s=time_s,
+                track_range=tracking.track1_range_m,
+                track_id=1,
+                color="#1f77b4",
+                marker_size=ms,
+            )
+            _plot_gesture_layers(
+                ax,
+                time_s=time_s,
+                track_range=tracking.track1_range_m,
+                osc_gesture=tracking.gesture,
+                raw_gesture=raw_g,
+            )
+
+    if t_pts or tracking is not None:
+        from matplotlib.lines import Line2D
+
+        handles: list = []
+        labels: list[str] = []
+        if t_pts:
+            handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    marker=".",
+                    color="w",
+                    markerfacecolor=cfg.peak_marker_color,
+                    markeredgecolor=cfg.peak_marker_edgecolor,
+                    markersize=6,
+                    linestyle="None",
+                )
+            )
+            labels.append(f"raw peaks ≥ {thr:.1f} dB")
+        if tracking is not None:
+            handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="w",
+                    markerfacecolor="#1f77b4",
+                    markeredgecolor="white",
+                    markersize=8,
+                    linestyle="None",
+                )
+            )
+            if dual_track:
+                labels.append("track id=1 (body)")
+            else:
+                labels.append(f"track ({gesture_mode})")
+            if dual_track:
+                handles.append(
+                    Line2D(
+                        [0],
+                        [0],
+                        marker="o",
+                        color="w",
+                        markerfacecolor="#ff7f0e",
+                        markeredgecolor="white",
+                        markersize=8,
+                        linestyle="None",
+                    )
+                )
+                labels.append("track id=2 (hands)")
+            handles.extend(
+                [
+                    Line2D(
+                        [0],
+                        [0],
+                        marker="^",
+                        color="w",
+                        markerfacecolor="none",
+                        markeredgecolor="#cccccc",
+                        markersize=8,
+                        linestyle="None",
+                    ),
+                    Line2D(
+                        [0],
+                        [0],
+                        marker="^",
+                        color="w",
+                        markerfacecolor="#f1c40f",
+                        markeredgecolor="white",
+                        markersize=10,
+                        linestyle="None",
+                    ),
+                    Line2D(
+                        [0],
+                        [0],
+                        marker="v",
+                        color="w",
+                        markerfacecolor="#f1c40f",
+                        markeredgecolor="white",
+                        markersize=10,
+                        linestyle="None",
+                    ),
+                ]
+            )
+            labels.extend(
+                [
+                    "raw push/pull (not OSC yet)",
+                    "OSC push",
+                    "OSC pull",
+                ]
+            )
+        ax.legend(handles, labels, loc="upper right", fontsize=8)
 
     ax.set_xlabel("time (s)")
     ax.set_ylabel("range (m)")
     ax.set_title(
-        f"{session_id} — static range peaks (≥ {thr:.1f} dB SNR, "
-        f"sep ≥ {cfg.min_peak_separation_m:.2f} m)"
+        f"{session_id} — range peaks [{gesture_mode}] "
+        f"(≥ {thr:.1f} dB, sep ≥ {cfg.min_peak_separation_m:.2f} m)"
     )
     cb = fig.colorbar(im, ax=ax, label="SNR (dB)")
     cb.ax.axhline(thr, color=cfg.threshold_line_color, linewidth=1.5, linestyle="--")
@@ -255,6 +529,11 @@ def parse_args() -> argparse.Namespace:
         default=_DEFAULT_CONFIG,
         help="Settings JSON (default: config/live_radar_to_max.json)",
     )
+    p.add_argument(
+        "--no-tracking-overlay",
+        action="store_true",
+        help="Do not overlay NN tracker IDs / gestures (raw peaks only)",
+    )
     return p.parse_args()
 
 
@@ -263,6 +542,7 @@ def main() -> int:
     settings_path = args.config.resolve()
     settings = json.loads(settings_path.read_text())
     peak_cfg = RangePeakDetectionConfig.from_settings(settings)
+    gesture_mode = active_gesture_mode(settings)
 
     capture = _resolve_capture_path(args.capture).resolve()
     if not capture.is_dir():
@@ -275,6 +555,7 @@ def main() -> int:
 
     print(f"Config: {settings_path}")
     print(f"  peak threshold: {peak_cfg.snr_threshold_db:.1f} dB")
+    print(f"  gesture mode: {gesture_mode}")
     print(f"  min separation: {peak_cfg.min_peak_separation_m:.2f} m")
     print(f"  capture: {capture}")
 
@@ -288,6 +569,28 @@ def main() -> int:
     n_det = int(np.sum(peak_count))
     print(f"  detected {n_det} peaks in {int(np.sum(peak_count > 0))}/{snr_db.shape[0]} frames")
 
+    tracking = None
+    if not args.no_tracking_overlay:
+        dt_s = _frame_dt_s(time_s)
+        tracking = simulate_gesture_volume(snr_db, range_m, peak_cfg, settings, dt_s)
+        n_t1 = int(np.sum(np.isfinite(tracking.track1_range_m)))
+        n_t2 = int(np.sum(np.isfinite(tracking.track2_range_m)))
+        n_push = int(np.sum(tracking.gesture == "push"))
+        n_pull = int(np.sum(tracking.gesture == "pull"))
+        if gesture_mode == "config2":
+            print(
+                f"  config2 replay: peak track in {n_t1} frames, "
+                f"gesture push={n_push} pull={n_pull} "
+                f"(dt={dt_s*1000:.1f} ms, 2-point velocity)"
+            )
+        else:
+            track_cfg = TrackingConfig.from_settings(settings)
+            print(
+                f"  config1 replay: id=1 in {n_t1} frames, id=2 in {n_t2} frames, "
+                f"gesture push={n_push} pull={n_pull} "
+                f"(dt={dt_s*1000:.1f} ms, jump≤{track_cfg.max_range_jump_m:.2f} m)"
+            )
+
     session_id = capture.name
     peaks_png = out_dir / "range_time_peaks.png"
     _plot_range_time_peaks(
@@ -298,6 +601,8 @@ def main() -> int:
         session_id=session_id,
         cfg=peak_cfg,
         out_path=peaks_png,
+        tracking=tracking,
+        gesture_mode=gesture_mode,
     )
     print(f"  {peaks_png}")
 
@@ -318,8 +623,7 @@ def main() -> int:
 
     if peak_cfg.save_peaks_npz:
         peaks_npz = out_dir / "range_time_peaks.npz"
-        np.savez_compressed(
-            peaks_npz,
+        save_kw: dict[str, Any] = dict(
             peak_range_m=peak_range,
             peak_snr_db=peak_snr,
             peak_count=peak_count,
@@ -330,6 +634,20 @@ def main() -> int:
             max_peaks_per_frame=peak_cfg.max_peaks_per_frame,
             config_path=str(settings_path),
         )
+        if tracking is not None:
+            save_kw.update(
+                track1_range_m=tracking.track1_range_m,
+                track1_snr_db=tracking.track1_snr_db,
+                track1_gesture=tracking.track1_gesture,
+                track2_range_m=tracking.track2_range_m,
+                track2_snr_db=tracking.track2_snr_db,
+                track2_gesture=tracking.track2_gesture,
+                gesture=tracking.gesture,
+                raw_gesture=tracking.raw_gesture,
+                velocity_mps=tracking.velocity_mps,
+                gesture_mode=gesture_mode,
+            )
+        np.savez_compressed(peaks_npz, **save_kw)
         print(f"  {peaks_npz}")
 
     return 0

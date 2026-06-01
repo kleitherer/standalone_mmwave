@@ -1,0 +1,93 @@
+{
+  "created_at": "20260529_201559",
+  "settings_file": "/Users/kaitlynleitherer/Desktop/EE219/mmWave/standalone_mmwave/config/live_radar_to_max.json",
+  "radar_cfg": "/Users/kaitlynleitherer/Desktop/EE219/mmWave/mmw-tracking-versions/waveform_configs/xwr68xx_3Tx_wfv0.5_RDAhigh_19.2m.cfg",
+  "cmd_tty": "/dev/cu.usbserial-00D832110",
+  "dca_ip": "192.168.33.180",
+  "host_data_port": 4098,
+  "osc_host": "127.0.0.1",
+  "osc_port": 9000,
+  "processing": {
+    "roi_min_m": 0.3,
+    "roi_max_m": 3.8,
+    "presence_threshold_db": 3.0,
+    "calibration_frames": 0,
+    "frame_average_count": 10,
+    "smooth_alpha": 0.2,
+    "push_pull": {
+      "enabled": true,
+      "snr_within_db_of_max": 4.0
+    }
+  },
+  "background": {
+    "capture": null,
+    "max_frames": 0
+  },
+  "capture": {
+    "enabled": true,
+    "save_raw_frames": true
+  },
+  "run": {
+    "duration_sec": 30.0
+  },
+  "radar_params": {
+    "sdk": "03.05",
+    "platform": "xWR68xx",
+    "adc_output_fmt": 1,
+    "range_bias": 0.0,
+    "rx_phase_bias": [
+      1,
+      0,
+      1,
+      0,
+      1,
+      0,
+      1,
+      0,
+      1,
+      0,
+      1,
+      0,
+      1,
+      0,
+      1,
+      0,
+      1,
+      0,
+      1,
+      0,
+      1,
+      0,
+      1,
+      0
+    ],
+    "n_chirps": 96,
+    "n_slow": 32,
+    "rx": [
+      1,
+      1,
+      1,
+      1
+    ],
+    "n_rx": 4,
+    "tx": [
+      1,
+      1,
+      1
+    ],
+    "n_tx": 3,
+    "n_samples": 256,
+    "frame_size": 393216,
+    "frame_time": 22.22,
+    "operating_freq_ghz": 60,
+    "chirp_time_us": 139,
+    "chirp_time": 139,
+    "chirp_period_same_tx_s": 0.000417,
+    "chirp_slope": 19600000000000.0,
+    "sample_rate": 2500000.0,
+    "velocity_max": 2.997601918465228,
+    "velocity_res": 0.18735011990407674,
+    "range_max": 19.132653061224488,
+    "range_res": 0.07473692602040816
+  }
+}
