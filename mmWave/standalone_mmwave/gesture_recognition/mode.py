@@ -1,4 +1,4 @@
-"""Gesture mode selection: config1 (2-ID tracking) vs config2 (simple velocity)."""
+"""Gesture mode selection: config1 (2-ID tracking), config2 (simple), or off."""
 
 from __future__ import annotations
 
@@ -9,25 +9,21 @@ import numpy as np
 from gesture_recognition.simple import SimpleGestureConfig, SimpleGestureProcessor
 from gesture_recognition.tracker import RangePeakTracker, TrackingConfig, TrackingVolume
 
-GestureModeName = Literal["config1", "config2"]
-GestureProcessor = Union[RangePeakTracker, SimpleGestureProcessor]
+GestureModeName = Literal["config1", "config2", "off"]
+GestureProcessor = Union[RangePeakTracker, SimpleGestureProcessor, None]
 
 
-def gesture_mode_from_settings(settings: dict[str, Any]) -> GestureModeName:
-    gesture = settings.get("gesture", {})
-    mode = str(gesture.get("mode", "config1")).strip().lower()
-    if mode in ("config2", "simple", "velocity"):
-        return "config2"
-    if mode in ("config1", "tracking", "dual"):
-        return "config1"
-    # Legacy: no mode key but only tracking block → config1
-    if "config1" in gesture or "tracking" in gesture:
-        return "config1"
-    return "config1"
+def _raw_mode_string(settings: dict[str, Any]) -> str:
+    return str(settings.get("gesture", {}).get("mode", "config1")).strip().lower()
+
+
+def gesture_enabled(settings: dict[str, Any]) -> bool:
+    """Top-level ``gesture.enabled`` (default true)."""
+    return bool(settings.get("gesture", {}).get("enabled", True))
 
 
 def config1_enabled(settings: dict[str, Any]) -> bool:
-    """When false, live/replay/plot use config2 even if mode is config1."""
+    """When false and mode is config1, fall back to config2."""
     gesture = settings.get("gesture", {})
     block = gesture.get("config1", gesture.get("tracking", {}))
     if not isinstance(block, dict):
@@ -36,14 +32,37 @@ def config1_enabled(settings: dict[str, Any]) -> bool:
 
 
 def active_gesture_mode(settings: dict[str, Any]) -> GestureModeName:
-    mode = gesture_mode_from_settings(settings)
-    if mode == "config1" and not config1_enabled(settings):
+    """
+    Resolved mode for live / replay / plots.
+
+    - ``off``: no tracking, no gestures (strongest peak → range / SNR / presence only)
+    - ``config1``: 2-ID NN tracker + hand gestures
+    - ``config2``: single closest peak + velocity gestures
+    """
+    if not gesture_enabled(settings):
+        return "off"
+
+    mode = _raw_mode_string(settings)
+    if mode in ("off", "none", "disabled", "false"):
+        return "off"
+    if mode in ("config2", "simple", "velocity"):
         return "config2"
-    return mode
+    if mode in ("config1", "tracking", "dual"):
+        if not config1_enabled(settings):
+            return "config2"
+        return "config1"
+    if "config1" in settings.get("gesture", {}) or "tracking" in settings.get("gesture", {}):
+        if not config1_enabled(settings):
+            return "config2"
+        return "config1"
+    return "config1"
 
 
 def make_gesture_processor(settings: dict[str, Any]) -> GestureProcessor:
-    if active_gesture_mode(settings) == "config2":
+    mode = active_gesture_mode(settings)
+    if mode == "off":
+        return None
+    if mode == "config2":
         return SimpleGestureProcessor(SimpleGestureConfig.from_settings(settings))
     return RangePeakTracker(TrackingConfig.from_settings(settings))
 
@@ -60,6 +79,8 @@ def gesture_mode_label(settings: dict[str, Any]) -> str:
 
 def describe_gesture_mode(settings: dict[str, Any]) -> str:
     mode = active_gesture_mode(settings)
+    if mode == "off":
+        return "Gesture off: strongest range peak → range_m / snr_db / presence (no tracks, no gesture OSC)"
     if mode == "config2":
         cfg = SimpleGestureConfig.from_settings(settings)
         return (
@@ -83,6 +104,9 @@ def simulate_gesture_volume(
     dt_s: float,
 ):
     """Replay active gesture mode over a range–time SNR volume."""
+    if active_gesture_mode(settings) == "off":
+        return None
+
     from gesture_recognition.simple import simulate_simple_volume
     from gesture_recognition.tracker import simulate_tracking_volume
 

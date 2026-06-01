@@ -10,14 +10,12 @@ import numpy as np
 
 @dataclass(frozen=True)
 class RangePeakDetectionConfig:
-    """``range_peak_detection`` block in config/live_radar_to_max.json."""
+    """``range_peak_detection`` — analysis plots and body (id=1) SNR gate only."""
 
     snr_threshold_db: float = 10.0
     min_peak_separation_m: float = 0.12
     max_peaks_per_frame: int = 8
     require_local_maximum: bool = True
-    secondary_min_range_sep_m: float = 0.3
-    secondary_max_range_sep_m: float = 2.0
     build_if_missing: bool = True
     max_frames: int = 0
     save_peaks_npz: bool = True
@@ -41,7 +39,6 @@ class RangePeakDetectionConfig:
             block = {}
         analysis = block.get("analysis", {})
         plot = block.get("plot", {})
-        osc_legacy = settings.get("osc", {})
 
         def _pair(key: str, default: tuple[float, float]) -> tuple[float, float]:
             v = plot.get(key, list(default))
@@ -53,27 +50,11 @@ class RangePeakDetectionConfig:
         if indices is None:
             indices = []
 
-        tracking = settings.get("gesture", {}).get("tracking", {})
-        if not isinstance(tracking, dict):
-            tracking = {}
-
         return cls(
             snr_threshold_db=float(block.get("snr_threshold_db", 10.0)),
             min_peak_separation_m=float(block.get("min_peak_separation_m", 0.12)),
             max_peaks_per_frame=max(1, int(block.get("max_peaks_per_frame", 8))),
             require_local_maximum=bool(block.get("require_local_maximum", True)),
-            secondary_min_range_sep_m=float(
-                block.get(
-                    "secondary_min_range_sep_m",
-                    tracking.get("min_hand_ahead_m", osc_legacy.get("secondary_min_range_sep_m", 0.3)),
-                )
-            ),
-            secondary_max_range_sep_m=float(
-                block.get(
-                    "secondary_max_range_sep_m",
-                    tracking.get("max_hand_ahead_m", osc_legacy.get("secondary_max_range_sep_m", 2.0)),
-                )
-            ),
             build_if_missing=bool(analysis.get("build_if_missing", True)),
             max_frames=int(analysis.get("max_frames", 0)),
             save_peaks_npz=bool(analysis.get("save_peaks_npz", True)),
@@ -90,6 +71,11 @@ class RangePeakDetectionConfig:
             peak_marker_linewidth=float(plot.get("peak_marker_linewidth", 0.8)),
             threshold_line_color=str(plot.get("threshold_line_color", "crimson")),
         )
+
+    @property
+    def body_snr_threshold_db(self) -> float:
+        """Track id=1 (body) minimum SNR — same as ``snr_threshold_db``."""
+        return float(self.snr_threshold_db)
 
 
 def _local_maxima_indices(profile: np.ndarray, threshold_db: float) -> list[int]:
@@ -110,12 +96,15 @@ def detect_range_peaks_frame(
     profile: np.ndarray,
     range_m: np.ndarray,
     cfg: RangePeakDetectionConfig,
+    *,
+    snr_threshold_db: float | None = None,
+    min_peak_separation_m: float | None = None,
 ) -> list[tuple[int, float, float]]:
     """All peaks in one range profile, sorted by SNR (highest first)."""
     if profile.size == 0:
         return []
 
-    thr = cfg.snr_threshold_db
+    thr = float(cfg.snr_threshold_db if snr_threshold_db is None else snr_threshold_db)
     if cfg.require_local_maximum:
         candidates = _local_maxima_indices(profile, thr)
     else:
@@ -125,7 +114,9 @@ def detect_range_peaks_frame(
         return []
 
     candidates.sort(key=lambda i: float(profile[i]), reverse=True)
-    min_sep = float(cfg.min_peak_separation_m)
+    min_sep = float(
+        cfg.min_peak_separation_m if min_peak_separation_m is None else min_peak_separation_m
+    )
     picked: list[tuple[int, float, float]] = []
     for idx in candidates:
         r = float(range_m[idx])
@@ -137,38 +128,117 @@ def detect_range_peaks_frame(
     return picked
 
 
+def detect_range_peaks_for_tracking(
+    profile: np.ndarray,
+    range_m: np.ndarray,
+    peak_cfg: RangePeakDetectionConfig,
+    track_cfg: Any,
+) -> list[tuple[int, float, float]]:
+    """
+    Peak list for config1 tracker.
+
+    Uses ``track_cfg.hand_snr_threshold_db`` for candidates (not body threshold).
+    Keeps ``peak_cfg.min_peak_separation_m`` unchanged. Adds a hand-band peak
+    in front of the strongest peak when one exists above the hand threshold.
+    """
+    hand_thr = float(track_cfg.hand_snr_threshold_db)
+    peaks = detect_range_peaks_frame(
+        profile,
+        range_m,
+        peak_cfg,
+        snr_threshold_db=hand_thr,
+    )
+    if profile.size == 0 or not peaks:
+        return peaks
+
+    _i1, r_body, _ = peaks[0]
+    band_min = float(track_cfg.min_hand_ahead_m)
+    band_max = float(track_cfg.max_hand_ahead_m)
+
+    best_hand: tuple[int, float, float] | None = None
+    best_hand_snr = -np.inf
+    if peak_cfg.require_local_maximum:
+        hand_candidates = _local_maxima_indices(profile, hand_thr)
+    else:
+        hand_candidates = [int(i) for i in np.flatnonzero(profile >= hand_thr)]
+
+    for idx in hand_candidates:
+        r = float(range_m[idx])
+        gap = float(r_body) - r
+        if band_min <= gap <= band_max:
+            snr = float(profile[idx])
+            if snr > best_hand_snr:
+                best_hand_snr = snr
+                best_hand = (idx, r, snr)
+
+    if best_hand is None:
+        return peaks
+
+    dup_tol = 0.05
+    if any(abs(best_hand[1] - pr) < dup_tol for _, pr, _ in peaks):
+        return peaks
+
+    merged = list(peaks)
+    merged.append(best_hand)
+    merged.sort(key=lambda item: item[2], reverse=True)
+    return merged[: peak_cfg.max_peaks_per_frame]
+
+
 def peaks_from_profile(
     profile: np.ndarray,
     range_m: np.ndarray,
-    cfg: RangePeakDetectionConfig,
+    peak_cfg: RangePeakDetectionConfig,
+    *,
+    snr_threshold_db: float | None = None,
+    for_tracking: bool = False,
+    track_cfg: Any = None,
 ) -> list[tuple[float, float]]:
-    """Peak list as ``[(range_m, snr_db), ...]`` sorted by SNR (highest first)."""
-    return [(r, snr) for _idx, r, snr in detect_range_peaks_frame(profile, range_m, cfg)]
+    """
+    Peak list as ``[(range_m, snr_db), ...]`` sorted by SNR (highest first).
+
+    Analysis / plots: body ``snr_threshold_db`` only.
+    ``for_tracking=True`` requires ``track_cfg`` and uses ``hand_snr_threshold_db``.
+    """
+    if for_tracking:
+        if track_cfg is None:
+            raise ValueError("track_cfg required when for_tracking=True")
+        picked = detect_range_peaks_for_tracking(profile, range_m, peak_cfg, track_cfg)
+    else:
+        picked = detect_range_peaks_frame(
+            profile, range_m, peak_cfg, snr_threshold_db=snr_threshold_db
+        )
+    return [(r, snr) for _idx, r, snr in picked]
 
 
 def osc_targets_from_profile(
     profile: np.ndarray,
     range_m: np.ndarray,
-    cfg: RangePeakDetectionConfig,
+    peak_cfg: RangePeakDetectionConfig,
+    *,
+    track_cfg: Any = None,
 ) -> list[tuple[float, float]]:
     """
-    OSC range targets: peak 0 = strongest (often torso); peak 1 = best in
-    ``secondary_min/max_range_sep_m`` band (often hands / nearer reflector).
+    Legacy two-target list: strongest peak + best in hand band (config1 geometry).
     """
-    peaks = detect_range_peaks_frame(profile, range_m, cfg)
+    peaks = detect_range_peaks_frame(profile, range_m, peak_cfg)
     if not peaks:
         return []
 
     _i1, r1, snr1 = peaks[0]
     out: list[tuple[float, float]] = [(r1, snr1)]
+    if track_cfg is None:
+        return out
 
-    min_sep = float(cfg.secondary_min_range_sep_m)
-    max_sep = float(cfg.secondary_max_range_sep_m)
+    min_sep = float(track_cfg.min_hand_ahead_m)
+    max_sep = float(track_cfg.max_hand_ahead_m)
+    hand_thr = float(track_cfg.hand_snr_threshold_db)
     best: tuple[float, float] | None = None
     best_snr = -np.inf
     for _idx, r2, snr2 in peaks[1:]:
-        sep = abs(r2 - r1)
-        if min_sep < sep < max_sep and snr2 > best_snr:
+        if snr2 < hand_thr:
+            continue
+        gap = float(r1) - float(r2)
+        if min_sep <= gap <= max_sep and snr2 > best_snr:
             best_snr = snr2
             best = (r2, snr2)
     if best is not None:

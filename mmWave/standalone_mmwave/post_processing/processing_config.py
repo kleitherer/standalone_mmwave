@@ -35,14 +35,13 @@ class PostProcessingConfig:
     """
     Plot / analysis defaults (``post_processing`` block in live_radar_to_max.json).
 
-    Range limits always come from ``processing.roi_min_m`` / ``processing.roi_max_m``
-    unless ``auto_range_gate`` is true.
+    Range limits always come from ``processing.roi_min_m`` / ``processing.roi_max_m``.
     """
 
     rd_display: str  # raw_power | decluttered | snr
     subtract_background: bool
-    auto_range_gate: bool
     write_range_time_snr: bool
+    write_range_time_declutter_power: bool
     write_rd_movie: bool
     rd_snapshot_frame: Optional[int]
     movie_format: str
@@ -87,6 +86,9 @@ class ProcessingConfig:
     snr_threshold_db: float
     calibration_frames: int
     declutter_mean_frames: int
+    background_session_mean: bool
+    snr_per_frame_median: bool
+    snr_calibration_frames: int
     range_min_m: float
     range_max_m: Optional[float]
     range_max_m_cap: Optional[float]
@@ -154,6 +156,9 @@ class ProcessingConfig:
             snr_threshold_db=snr_threshold_db,
             calibration_frames=calibration_frames,
             declutter_mean_frames=declutter_mean_frames,
+            background_session_mean=bool(data.get("background_session_mean", True)),
+            snr_per_frame_median=bool(data.get("snr_per_frame_median", True)),
+            snr_calibration_frames=int(data.get("snr_calibration_frames", 0)),
             range_min_m=range_min_m,
             range_max_m=range_max_m,
             range_max_m_cap=_opt_float(rg.get("max_m_cap")),
@@ -173,9 +178,11 @@ class ProcessingConfig:
             post_processing=PostProcessingConfig(
                 rd_display=rd_display,
                 subtract_background=bool(pp.get("subtract_background", False)),
-                auto_range_gate=bool(pp.get("auto_range_gate", False)),
                 write_range_time_snr=bool(
                     pp.get("write_range_time_snr", pp.get("snr_analysis", True))
+                ),
+                write_range_time_declutter_power=bool(
+                    pp.get("write_range_time_declutter_power", True)
                 ),
                 write_rd_movie=bool(pp.get("write_rd_movie", True)),
                 rd_snapshot_frame=_opt_int(pp.get("rd_snapshot_frame")),
@@ -241,19 +248,6 @@ def resolve_capture_range_gate(
     *,
     radar_max_m: float,
 ) -> Tuple[float, float, dict | None]:
-    """
-    Range gate for post-processing.
-
-    Uses ``processing.roi_min_m`` / ``roi_max_m`` from live_radar_to_max.json.
-    When ``post_processing.auto_range_gate`` is true, ``roi_max_m`` is ignored and
-    the max range is estimated from a background profile.
-    """
-    if cfg.post_processing.auto_range_gate:
-        from post_processing.range_gate import estimate_range_gate_for_capture
-
-        r_min, r_max, info = estimate_range_gate_for_capture(
-            capture, cfg, radar_max_range_m=radar_max_m
-        )
-        return r_min, r_max, info
+    """Range gate from ``processing.roi_min_m`` / ``roi_max_m``."""
     r_min, r_max = resolve_range_gate(cfg, estimated_max_m=radar_max_m)
     return r_min, r_max, None

@@ -61,10 +61,21 @@ def _frame_times(session: CaptureSession, n: int) -> np.ndarray:
 
 
 def rd_to_snr_db(rd_db: np.ndarray, noise_db: float | None = None) -> np.ndarray:
-    """SNR in dB relative to noise floor (default: per-frame median)."""
+    """SNR in dB relative to noise floor (default: per-frame mean of ROI)."""
     if noise_db is None:
-        noise_db = float(np.median(rd_db))
+        noise_db = float(np.mean(rd_db))
     return rd_db - noise_db
+
+
+def estimate_calibration_noise_db(
+    rd_declutter_roi_list: list[np.ndarray],
+    *,
+    n_frames: int,
+) -> float:
+    """Scalar noise floor (dB) from the first ``n_frames`` background-subtracted RD ROIs."""
+    n = min(len(rd_declutter_roi_list), max(1, int(n_frames)))
+    stack = np.stack(rd_declutter_roi_list[:n], axis=0)
+    return float(np.median(stack))
 
 
 def build_range_time_volume(
@@ -72,6 +83,7 @@ def build_range_time_volume(
     *,
     range_gate_m: Tuple[float, float] = (0.5, 12.0),
     clutter_window: int = 16,
+    background_session_mean: bool = True,
     background_capture: Path | None = None,
     background_max_frames: int = 0,
     angle_bins: int = 128,
@@ -82,9 +94,20 @@ def build_range_time_volume(
     max_frames: int = 0,
     show_progress: bool = True,
     limiter: bool = False,
+    snr_per_frame_median: bool = True,
+    snr_calibration_frames: int = 0,
 ) -> RangeTimeVolume:
     """
     Stack per-frame range–Doppler SNR into a range–time image.
+
+    Background (RD clutter map):
+    - ``background_session_mean=True``: mean over all frames in this capture.
+    - ``background_session_mean=False``: mean of first ``clutter_window`` frames.
+
+    SNR noise floor (when ``snr_per_frame_median=True``):
+    - Per-frame **mean** of background-subtracted RD ROI via ``rd_to_snr_db``.
+
+    When ``snr_per_frame_median=False``: fixed scalar from first N calib frames (legacy).
 
     Each time slice: SNR(d,r) = RD_power(d,r) - noise, then max over Doppler → SNR(r).
 
@@ -139,17 +162,33 @@ def build_range_time_volume(
             Path(background_capture), params, max_frames=background_max_frames
         )
     else:
-        n_calib = min(len(rd_raw_list), max(1, int(clutter_window)))
-        bg = np.mean(np.stack(rd_raw_list[:n_calib], axis=0), axis=0)
-        bg_c = np.mean(np.stack(rda_complex_list[:n_calib], axis=0), axis=0)
+        if background_session_mean:
+            bg = np.mean(np.stack(rd_raw_list, axis=0), axis=0)
+            bg_c = np.mean(np.stack(rda_complex_list, axis=0), axis=0)
+        else:
+            n_calib = min(len(rd_raw_list), max(1, int(clutter_window)))
+            bg = np.mean(np.stack(rd_raw_list[:n_calib], axis=0), axis=0)
+            bg_c = np.mean(np.stack(rda_complex_list[:n_calib], axis=0), axis=0)
 
     rd_declutter_list = [rd_raw - bg for rd_raw in rd_raw_list]
     rda_declutter_list = [rda - bg_c for rda in rda_complex_list]
 
-    for rd_raw, rd_declutter, rda_d in zip(rd_raw_list, rd_declutter_list, rda_declutter_list):
+    rd_declutter_roi_list = [rd[:, r_mask] for rd in rd_declutter_list]
+    n_noise = snr_calibration_frames if snr_calibration_frames > 0 else clutter_window
+    calib_noise_db: float | None = None
+    if not snr_per_frame_median:
+        calib_noise_db = estimate_calibration_noise_db(
+            rd_declutter_roi_list, n_frames=n_noise
+        )
+
+    for rd_raw, rd_declutter, rda_d, rd_roi_declutter in zip(
+        rd_raw_list, rd_declutter_list, rda_declutter_list, rd_declutter_roi_list
+    ):
         rd_roi_raw = rd_raw[:, r_mask]
-        rd_roi_declutter = rd_declutter[:, r_mask]
-        snr = rd_to_snr_db(rd_roi_declutter)
+        if snr_per_frame_median:
+            snr = rd_to_snr_db(rd_roi_declutter)
+        else:
+            snr = rd_roi_declutter - calib_noise_db
         rt_list.append(np.max(snr, axis=0))
         raw_rt_list.append(np.max(rd_roi_raw, axis=0))
         declutter_rt_list.append(np.max(rd_roi_declutter, axis=0))

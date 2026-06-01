@@ -39,6 +39,7 @@ from gesture_recognition.mode import (
     make_osc_gesture_limiter,
 )
 from gesture_recognition.publisher import publish_radar_frame
+from gesture_recognition.tracker import TrackingConfig
 from gesture_recognition.status import format_status_line
 from live_radar_to_max import _load_settings, _resolve_capture_path
 from processing.range_time_snr import RangeTimeSnrNpz, RangeTimeSnrProcessor
@@ -197,10 +198,21 @@ def main() -> int:
     args = _parse_args()
     log = lambda msg: print(msg, flush=True)
     settings = _load_settings(args.settings)
+    ang_cfg = settings.get("angle_estimation", {})
+    osc_cfg = settings.get("osc", {})
+    send_track1_angle = (
+        bool(osc_cfg.get("send_angle", False))
+        and not bool(getattr(args, "no_angle", False))
+    )
     peak_cfg = RangePeakDetectionConfig.from_settings(settings)
-    gesture_processor = make_gesture_processor(settings)
     gesture_mode = active_gesture_mode(settings)
+    gesture_processor = make_gesture_processor(settings)
     osc_gesture_limiter = make_osc_gesture_limiter(settings)
+    from gesture_recognition.tracker import TrackingConfig
+
+    track_cfg = (
+        TrackingConfig.from_settings(settings) if gesture_mode == "config1" else None
+    )
 
     capture_path = _resolve_capture_path(args.capture)
     if not (capture_path / "metadata.json").is_file() and not (capture_path / "session.json").is_file():
@@ -231,7 +243,18 @@ def main() -> int:
     log(f"  frames:   {len(paths)} @ {fps:.2f} fps")
     log(f"  OSC:      {args.osc_host}:{args.osc_port}")
     log(f"  ROI:      {args.roi_min:.2f}–{args.roi_max:.2f} m")
-    log(f"  Peak SNR threshold: {peak_cfg.snr_threshold_db:.1f} dB (range_peak_detection)")
+    if track_cfg is not None:
+        log(
+            f"  Peak SNR threshold: body={peak_cfg.body_snr_threshold_db:.1f} dB, "
+            f"hand={track_cfg.hand_snr_threshold_db:.1f} dB"
+        )
+    else:
+        log(f"  Peak SNR threshold: body={peak_cfg.body_snr_threshold_db:.1f} dB")
+    if send_track1_angle:
+        log(
+            f"  Angle: track id=1, FFT bins={int(ang_cfg.get('fft_bins', 1024))}, "
+            f"FoV={float(ang_cfg.get('fov_deg', 90.0)):.0f}°"
+        )
     log(f"  {describe_gesture_mode(settings)}")
     log(f"  Avg:      {max(1, int(args.frame_average_count))} frame(s)")
     if args.fast:
@@ -293,6 +316,17 @@ def main() -> int:
             background_capture=args.background_capture,
             background_max_frames=args.background_max_frames,
         )
+    elif send_track1_angle:
+        range_time_processor = RangeTimeSnrProcessor.from_capture(
+            capture_path,
+            params,
+            range_gate_m=(args.roi_min, args.roi_max),
+            declutter_mean_frames=args.declutter_mean_frames,
+            limiter=args.range_time_limiter,
+            background_capture=args.background_capture,
+            background_max_frames=args.background_max_frames,
+        )
+        log("  Angle RD: computed on the fly (peaks still from range_time_snr.npz)")
     publisher = make_publisher(args, settings)
     mode_text = f"{args.replay_mode_text} ({capture_path.name})"
     publisher.send_mode(mode_text)
@@ -318,9 +352,14 @@ def main() -> int:
     def _send_frame(frame_idx: int, frame: np.ndarray):
         nonlocal sent
         if range_time_npz is not None:
-            peaks = range_time_npz.peaks_for_frame(frame_idx, peak_cfg)
+            if track_cfg is not None:
+                peaks = range_time_npz.peaks_for_frame(
+                    frame_idx, peak_cfg, for_tracking=True, track_cfg=track_cfg
+                )
+            else:
+                peaks = range_time_npz.peaks_for_frame(frame_idx, peak_cfg)
         else:
-            peaks = range_time_processor.peaks_from_frame(frame, peak_cfg)
+            peaks = range_time_processor.peaks_from_frame(frame, peak_cfg, track_cfg)
         result = publish_radar_frame(
             publisher,
             peak_cfg,
@@ -328,6 +367,10 @@ def main() -> int:
             gesture_processor,
             frame_dt_s,
             osc_gesture_limiter,
+            frame_int16=frame if send_track1_angle else None,
+            range_time_processor=range_time_processor if send_track1_angle else None,
+            angle_fft_bins=int(ang_cfg.get("fft_bins", 128)),
+            angle_fov_deg=float(ang_cfg.get("fov_deg", 90.0)),
         )
         if result is None:
             return None
@@ -393,7 +436,8 @@ def main() -> int:
                 break
             if duration_limit > 0 and (time.monotonic() - run_start) >= duration_limit:
                 break
-            gesture_processor.reset()
+            if gesture_processor is not None:
+                gesture_processor.reset()
             osc_gesture_limiter.reset()
             if background_rd_mean is None and range_time_npz is None:
                 range_time_processor = RangeTimeSnrProcessor.from_capture(

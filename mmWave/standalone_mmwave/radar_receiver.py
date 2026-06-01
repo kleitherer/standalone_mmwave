@@ -66,7 +66,10 @@ class RadarReceiver:
         self.wire_frame_size = int(
             self.params.get("wire_frame_size", self.params["frame_size"])
         )
-        self.frame_buffer = FrameBuffer(2 * self.wire_frame_size, self.wire_frame_size)
+        self.ros_frame_size = int(
+            self.params.get("ros_frame_size", self.wire_frame_size + 256)
+        )
+        self.frame_buffer = FrameBuffer(2 * self.ros_frame_size, self.ros_frame_size)
 
     def configure(self) -> None:
         if self.radar_cli is not None:
@@ -98,7 +101,18 @@ class RadarReceiver:
             self.dca1000.data_socket.settimeout(old)
 
     def read_frame(self, packet_timeout_sec: float = 0.0):
-        """Block until a complete wire frame is assembled; return header-stripped ADC int16."""
+        """
+        Block until a complete wire frame is assembled.
+
+        Returns
+        -------
+        adc : int16 ndarray
+            Header-stripped ADC (``adc_frame_size`` bytes).
+        wire : int16 ndarray | None
+            Full ROS/UDP frame (``ros_frame_size`` bytes: wire + frame trailer), or
+            ``None`` if no new frame this call.
+        new_frame : bool
+        """
         from processing.lvds_frame import strip_lvds_chirp_headers
 
         while True:
@@ -108,9 +122,9 @@ class RadarReceiver:
                 seqn, _bytec, msg = self.read_packet()
             frame_data, new_frame = self.frame_buffer.add_msg(seqn, msg)
             if new_frame:
-                wire = np.asarray(frame_data, dtype=np.int16).ravel()
+                wire = np.asarray(frame_data, dtype=np.int16).ravel().copy()
                 adc = strip_lvds_chirp_headers(wire, self.params)
-                return adc, True
+                return adc, wire, True
 
     def close(self) -> None:
         self.stop_capture()
@@ -254,6 +268,7 @@ def main() -> int:
     print(
         f"adc_frame={params.get('adc_frame_size', params['frame_size'])} B, "
         f"wire_frame={params.get('wire_frame_size', params['frame_size'])} B, "
+        f"ros_frame={params.get('ros_frame_size', params.get('wire_frame_size', params['frame_size']) + 256)} B, "
         f"shape=({params['n_chirps']}, {params['n_rx']}, {params['n_samples']}) "
         f"complex={'yes' if params['adc_output_fmt'] > 0 else 'no'}"
     )
@@ -298,7 +313,7 @@ def main() -> int:
     try:
         while not stop:
             try:
-                frame_data, _ = receiver.read_frame(packet_timeout)
+                frame_data, _wire, _ = receiver.read_frame(packet_timeout)
             except TimeoutError:
                 if stop:
                     break

@@ -79,6 +79,7 @@ def _load_or_build_snr_volume(
         capture,
         range_gate_m=(r_min, r_max),
         clutter_window=proc.declutter_mean_frames,
+        background_session_mean=proc.background_session_mean,
         background_capture=proc.background.capture,
         background_max_frames=proc.background.max_frames,
         angle_bins=proc.angle.fft_bins,
@@ -88,6 +89,8 @@ def _load_or_build_snr_volume(
         snr_threshold_db=proc.snr_threshold_db,
         max_frames=peak_cfg.max_frames,
         limiter=pp.range_time_limiter,
+        snr_per_frame_median=proc.snr_per_frame_median,
+        snr_calibration_frames=proc.snr_calibration_frames,
         show_progress=True,
     )
     npz_path.parent.mkdir(parents=True, exist_ok=True)

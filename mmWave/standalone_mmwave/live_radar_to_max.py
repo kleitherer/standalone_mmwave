@@ -32,7 +32,10 @@ _ROOT = Path(__file__).resolve().parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from background_model import estimate_rd_background_from_capture
+from background_model import (
+    estimate_rd_background_from_capture,
+    estimate_rda_background_from_capture,
+)
 from gesture_recognition.osc import OscSender, make_publisher
 from gesture_recognition.peaks import RangePeakDetectionConfig
 from gesture_recognition.mode import (
@@ -41,6 +44,7 @@ from gesture_recognition.mode import (
     make_gesture_processor,
     make_osc_gesture_limiter,
 )
+from gesture_recognition.tracker import TrackingConfig
 from gesture_recognition.publisher import publish_radar_frame
 from gesture_recognition.status import format_status_line
 from processing.range_time_snr import RangeTimeSnrProcessor
@@ -65,13 +69,15 @@ class CaptureWriter:
     def write_metadata(self, metadata: dict) -> None:
         (self.root / "metadata.json").write_text(json.dumps(metadata, indent=2, default=str))
 
-    def write_frame(self, frame) -> None:
+    def write_frame(self, frame, *, wire=None) -> None:
         if not self.save_raw_frames:
             return
         import numpy as np
 
         self._n += 1
         np.save(self._raw_dir / f"frame_{self._n:06d}.npy", frame)
+        if wire is not None:
+            np.save(self._raw_dir / f"wire_frame_{self._n:06d}.npy", wire)
 
 
 def _load_settings(path: Path) -> dict:
@@ -298,10 +304,19 @@ def main() -> int:
     log = lambda msg: print(msg, flush=True)
     settings = _load_settings(args.settings)
     proc_cfg = settings.get("processing", {})
+    ang_cfg = settings.get("angle_estimation", {})
+    osc_cfg = settings.get("osc", {})
+    send_track1_angle = (
+        bool(osc_cfg.get("send_angle", False))
+        and not bool(getattr(args, "no_angle", False))
+    )
     peak_cfg = RangePeakDetectionConfig.from_settings(settings)
-    gesture_processor = make_gesture_processor(settings)
     gesture_mode = active_gesture_mode(settings)
+    gesture_processor = make_gesture_processor(settings)
     osc_gesture_limiter = make_osc_gesture_limiter(settings)
+    track_cfg = (
+        TrackingConfig.from_settings(settings) if gesture_mode == "config1" else None
+    )
     if args.background_capture:
         args.background_capture = _resolve_capture_path(args.background_capture)
 
@@ -319,12 +334,20 @@ def main() -> int:
     log(f"  DCA:     {args.dca_ip}  UDP data {args.host_data_port}")
     log(f"  OSC:     {args.osc_host}:{args.osc_port}")
     log(f"  ROI:     {args.roi_min:.2f}–{args.roi_max:.2f} m")
-    log(f"  Peak SNR threshold: {peak_cfg.snr_threshold_db:.1f} dB (range_peak_detection)")
-    log(f"  Gesture: {gesture_mode}")
-    if gesture_mode == "config1":
-        from gesture_recognition.tracker import TrackingConfig
-
-        track_cfg = TrackingConfig.from_settings(settings)
+    if track_cfg is not None:
+        log(
+            f"  Peak SNR threshold: body={peak_cfg.body_snr_threshold_db:.1f} dB, "
+            f"hand={track_cfg.hand_snr_threshold_db:.1f} dB"
+        )
+    else:
+        log(f"  Peak SNR threshold: body={peak_cfg.body_snr_threshold_db:.1f} dB")
+    if send_track1_angle:
+        log(
+            f"  Angle: track id=1, FFT bins={int(ang_cfg.get('fft_bins', 128))}, "
+            f"FoV={float(ang_cfg.get('fov_deg', 90.0)):.0f}°"
+        )
+    log(f"  Gesture: {gesture_mode} — {describe_gesture_mode(settings)}")
+    if gesture_mode == "config1" and track_cfg is not None:
         if track_cfg.body_calibration_s > 0:
             log(
                 f"  Body calib: stand still {track_cfg.body_calibration_s:.0f}s "
@@ -347,6 +370,7 @@ def main() -> int:
     log("")
 
     background_rd_mean = None
+    background_rda_mean = None
     if args.background_capture:
         session_json = args.background_capture / "session.json"
         metadata_json = args.background_capture / "metadata.json"
@@ -364,6 +388,11 @@ def main() -> int:
             max_frames=max(0, int(args.background_max_frames)),
             limiter=args.range_time_limiter,
         )
+        background_rda_mean = estimate_rda_background_from_capture(
+            args.background_capture,
+            params,
+            max_frames=max(0, int(args.background_max_frames)),
+        )
 
     range_time_processor: RangeTimeSnrProcessor | None = None
     if background_rd_mean is not None:
@@ -371,6 +400,7 @@ def main() -> int:
             params,
             range_gate_m=(args.roi_min, args.roi_max),
             background_rd_mean=background_rd_mean,
+            background_rda_mean=background_rda_mean,
             limiter=args.range_time_limiter,
         )
     else:
@@ -389,7 +419,6 @@ def main() -> int:
             log(f"  Range SNR: no declutter (limiter={'on' if args.range_time_limiter else 'off'})")
 
     frame_dt_s = max(float(params.get("frame_time", 22.22)) / 1000.0, 1e-6)
-    log(f"  {describe_gesture_mode(settings)}")
 
     publisher = make_publisher(args, settings)
     publisher.send_mode(args.live_mode_text)
@@ -491,7 +520,7 @@ def main() -> int:
                 log(f"\nReached duration limit ({duration_limit:.1f}s).")
                 break
             try:
-                frame, _ = receiver.read_frame(packet_timeout)
+                adc, wire, _ = receiver.read_frame(packet_timeout)
             except TimeoutError:
                 udp_timeouts += 1
                 now_diag = time.monotonic()
@@ -508,8 +537,8 @@ def main() -> int:
 
             frames_rx += 1
 
-            # Frame from read_frame() is already wire-aligned + LVDS header stripped.
-            capture_frame = frame
+            # adc: header-stripped for processing; wire: full FrameBuffer for NPZ export.
+            capture_frame = adc
             if frame_avg_count > 1:
                 import numpy as np
 
@@ -525,9 +554,9 @@ def main() -> int:
                 )
 
             if cap_writer is not None:
-                cap_writer.write_frame(capture_frame)
+                cap_writer.write_frame(capture_frame, wire=wire)
 
-            peaks = range_time_processor.peaks_from_frame(capture_frame, peak_cfg)
+            peaks = range_time_processor.peaks_from_frame(capture_frame, peak_cfg, track_cfg)
             if peaks is None:
                 now_diag = time.monotonic()
                 if now_diag - last_diag >= 2.0:
@@ -547,6 +576,10 @@ def main() -> int:
                 gesture_processor,
                 frame_dt_s,
                 osc_gesture_limiter,
+                frame_int16=capture_frame if send_track1_angle else None,
+                range_time_processor=range_time_processor if send_track1_angle else None,
+                angle_fft_bins=int(ang_cfg.get("fft_bins", 128)),
+                angle_fov_deg=float(ang_cfg.get("fov_deg", 90.0)),
             )
             if result is None:
                 continue

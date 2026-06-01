@@ -23,6 +23,13 @@ def wire_frame_byte_size(params: Dict[str, Any]) -> int:
     return int(params.get("wire_frame_size", params["frame_size"]))
 
 
+def ros_frame_byte_size(params: Dict[str, Any]) -> int:
+    """ROS ``recver.cpp`` / rosbag NPZ record size (wire + 256 B frame trailer)."""
+    if "ros_frame_size" in params:
+        return int(params["ros_frame_size"])
+    return wire_frame_byte_size(params) + int(params.get("ros_frame_trailer_bytes", 256))
+
+
 def strip_lvds_chirp_headers(
     wire_int16: np.ndarray,
     params: Dict[str, Any],

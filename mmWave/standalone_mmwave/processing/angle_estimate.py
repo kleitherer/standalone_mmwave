@@ -43,3 +43,40 @@ def angle_deg_at_rd_cell(
     spec = np.fft.fftshift(np.fft.fft(snap, n=int(n_bins)))
     a_idx = int(np.argmax(np.abs(spec)))
     return float(angle_axis_deg(n_bins, fov_deg)[a_idx])
+
+
+def angle_at_track_range(
+    rda_declutter: np.ndarray,
+    rd_declutter: np.ndarray,
+    range_m: float,
+    range_bins_m: np.ndarray,
+    r_mask: np.ndarray,
+    doppler_axis: np.ndarray,
+    *,
+    n_bins: int = 128,
+    fov_deg: float = 90.0,
+) -> tuple[float, float, int, int]:
+    """
+    Angle at a known range using the RD-heatmap / range–azimuth pipeline.
+
+    1. Decluttered RD map (same as plotted heatmap) → per-range Doppler peak
+    2. Complex antenna vector from decluttered ``RDa`` at that (Doppler, range)
+    3. FFT across virtual antennas → peak angle
+
+    Returns ``(angle_deg, doppler_mps, d_idx, r_idx)``.
+    """
+    from processing.range_azimuth import doppler_idx_per_range
+
+    rd_roi = rd_declutter[:, r_mask]
+    r_local = int(np.argmin(np.abs(range_bins_m - float(range_m))))
+    d_idx = int(doppler_idx_per_range(rd_roi)[r_local])
+    r_idx = int(np.flatnonzero(r_mask)[r_local])
+    angle_deg = angle_deg_at_rd_cell(
+        rda_declutter,
+        d_idx,
+        r_idx,
+        n_bins=int(n_bins),
+        fov_deg=float(fov_deg),
+    )
+    doppler_mps = float(doppler_axis[d_idx])
+    return angle_deg, doppler_mps, d_idx, r_idx

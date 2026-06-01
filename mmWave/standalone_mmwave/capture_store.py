@@ -92,8 +92,33 @@ class CaptureSession:
                 "frame_byte_count": int(
                     radar_params.get("adc_frame_size", radar_params["frame_size"])
                 ),
+                "wire_frame_int16_count": int(
+                    radar_params.get("wire_frame_size", radar_params["frame_size"]) // 2
+                ),
                 "wire_frame_byte_count": int(
                     radar_params.get("wire_frame_size", radar_params["frame_size"])
+                ),
+                "ros_frame_byte_count": int(
+                    radar_params.get(
+                        "ros_frame_size",
+                        radar_params.get("wire_frame_size", radar_params["frame_size"])
+                        + 256,
+                    )
+                ),
+                "npz_frame_int16_count": int(
+                    radar_params.get(
+                        "ros_frame_size",
+                        radar_params.get("wire_frame_size", radar_params["frame_size"])
+                        + 256,
+                    )
+                    // 2
+                ),
+                "npz_frame_byte_count": int(
+                    radar_params.get(
+                        "ros_frame_size",
+                        radar_params.get("wire_frame_size", radar_params["frame_size"])
+                        + 256,
+                    )
                 ),
                 "lvds_enable_header": bool(radar_params.get("lvds_enable_header", 0)),
                 "reshape": {
@@ -139,7 +164,13 @@ class CaptureSession:
         )
         return session
 
-    def write_frame(self, frame_int16: np.ndarray, *, timestamp: Optional[float] = None) -> FrameRecord:
+    def write_frame(
+        self,
+        frame_int16: np.ndarray,
+        *,
+        wire: np.ndarray | None = None,
+        timestamp: Optional[float] = None,
+    ) -> FrameRecord:
         if not self._write:
             raise RuntimeError("Session not opened for writing")
         self._frame_count += 1
@@ -148,6 +179,10 @@ class CaptureSession:
         path = self.raw_dir / name
         arr = np.asarray(frame_int16, dtype=np.int16).ravel()
         np.save(path, arr)
+        if wire is not None:
+            wire_arr = np.asarray(wire, dtype=np.int16).ravel()
+            wire_name = f"wire_{name}"
+            np.save(self.raw_dir / wire_name, wire_arr)
         rec = FrameRecord(
             index=self._frame_count,
             path=path,
@@ -158,6 +193,7 @@ class CaptureSession:
             {
                 "frame_index": rec.index,
                 "filename": name,
+                "wire_filename": f"wire_{name}" if wire is not None else "",
                 "timestamp_unix": f"{rec.timestamp_unix:.6f}",
                 "n_samples": rec.n_samples,
             }

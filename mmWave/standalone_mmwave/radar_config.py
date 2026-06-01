@@ -123,6 +123,11 @@ class RadarConfig(OrderedDict):
         if lvds_enable_header and adc_output_fmt > 0:
             lvds_header_complex_per_chirp = 16  # TI enableHeader=1 padding (complex samples)
             wire_frame_size = adc_frame_size + n_chirps * lvds_header_complex_per_chirp * 2 * 2
+        # xwr_raw_ros recver.cpp: frame_size += n_chirps*(56+8) + 248 + 8
+        # Per-chirp LVDS headers match wire_frame_size; extra 256 B is frame-level trailer
+        # (HSI frame delimiter / TLV) required for rosbag NPZ and decode_data on ROS captures.
+        ros_frame_trailer_bytes = 256
+        ros_frame_size = wire_frame_size + ros_frame_trailer_bytes
         frame_size = adc_frame_size
         frame_time = self["frameCfg"][4]
 
@@ -160,6 +165,8 @@ class RadarConfig(OrderedDict):
                 ("frame_size", frame_size),
                 ("adc_frame_size", adc_frame_size),
                 ("wire_frame_size", wire_frame_size),
+                ("ros_frame_trailer_bytes", ros_frame_trailer_bytes),
+                ("ros_frame_size", ros_frame_size),
                 ("lvds_enable_header", int(lvds_enable_header)),
                 ("lvds_header_complex_per_chirp", lvds_header_complex_per_chirp),
                 ("lvds_header_position", "back"),

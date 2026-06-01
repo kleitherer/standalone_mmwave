@@ -130,13 +130,13 @@ def main() -> int:
     try:
         while not stop:
             try:
-                frame, _ = receiver.read_frame(packet_timeout)
+                frame, wire, _ = receiver.read_frame(packet_timeout)
             except TimeoutError:
                 print("  (waiting for UDP data…)")
                 continue
 
             n += 1
-            rec = session.write_frame(frame)
+            rec = session.write_frame(frame, wire=wire)
             if n == 1 or n <= 3 or (args.print_every and n % args.print_every == 0):
                 print(f"  [{n}] {rec.path.name}  ({rec.n_samples} int16)")
 

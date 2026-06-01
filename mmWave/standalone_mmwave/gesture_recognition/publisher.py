@@ -28,22 +28,130 @@ def publish_radar_frame(
     processor: GestureProcessor,
     dt_s: float,
     osc_gesture_limiter: OscGestureRateLimiter,
+    *,
+    frame_int16: np.ndarray | None = None,
+    range_time_processor=None,
+    angle_fft_bins: int = 128,
+    angle_fov_deg: float = 90.0,
 ) -> StreamFrameResult | None:
     """
-    Publish one frame to Max from range peaks + gesture processor.
+    Publish one frame to Max from range peaks + optional gesture processor.
 
-    ``processor`` is either :class:`RangePeakTracker` (config1) or
-    :class:`SimpleGestureProcessor` (config2).
+    ``processor`` is :class:`RangePeakTracker` (config1), :class:`SimpleGestureProcessor`
+    (config2), or ``None`` (tracking/gesture off — strongest peak only).
     """
     if peaks is None:
         return None
+
+    if processor is None:
+        return _publish_direct_frame(
+            publisher,
+            peak_cfg,
+            peaks,
+            frame_int16=frame_int16,
+            range_time_processor=range_time_processor,
+            angle_fft_bins=angle_fft_bins,
+            angle_fov_deg=angle_fov_deg,
+        )
 
     if isinstance(processor, SimpleGestureProcessor):
         return _publish_simple_frame(
             publisher, peak_cfg, peaks, processor, dt_s, osc_gesture_limiter
         )
     return _publish_tracking_frame(
-        publisher, peak_cfg, peaks, processor, dt_s, osc_gesture_limiter
+        publisher,
+        peak_cfg,
+        peaks,
+        processor,
+        dt_s,
+        osc_gesture_limiter,
+        frame_int16=frame_int16,
+        range_time_processor=range_time_processor,
+        angle_fft_bins=angle_fft_bins,
+        angle_fov_deg=angle_fov_deg,
+    )
+
+
+def _publish_direct_frame(
+    publisher: OscPublisher,
+    peak_cfg: RangePeakDetectionConfig,
+    peaks: list[tuple[float, float]],
+    *,
+    frame_int16: np.ndarray | None = None,
+    range_time_processor=None,
+    angle_fft_bins: int = 128,
+    angle_fov_deg: float = 90.0,
+) -> StreamFrameResult:
+    """No tracking: strongest peak above body SNR threshold."""
+    if not peaks:
+        if not publisher.emit_below_threshold:
+            publisher.send_frame(
+                range_m=0.0,
+                snr_db=0.0,
+                present=False,
+                gesture=GESTURE_NONE,
+            )
+        return StreamFrameResult(
+            published=False,
+            present=False,
+            range_m=0.0,
+            snr_db=0.0,
+            gesture=GESTURE_NONE,
+        )
+
+    range_m, snr_db = peaks[0]
+    present = float(snr_db) >= peak_cfg.body_snr_threshold_db
+
+    angle_deg: float | None = None
+    rd_doppler_mps: float | None = None
+    if (
+        frame_int16 is not None
+        and range_time_processor is not None
+        and not publisher.no_angle
+    ):
+        est = range_time_processor.angle_at_range_m(
+            frame_int16,
+            range_m,
+            n_bins=angle_fft_bins,
+            fov_deg=angle_fov_deg,
+        )
+        if est is not None:
+            angle_deg, rd_doppler_mps = est
+
+    if not present and not publisher.emit_below_threshold:
+        publisher.send_frame(
+            range_m=0.0,
+            snr_db=0.0,
+            present=False,
+            gesture=GESTURE_NONE,
+        )
+        return StreamFrameResult(
+            published=False,
+            present=False,
+            range_m=float(range_m),
+            snr_db=float(snr_db),
+            gesture=GESTURE_NONE,
+            angle_deg=angle_deg,
+            track1_doppler_mps=rd_doppler_mps,
+        )
+
+    published = publisher.send_frame(
+        range_m=float(range_m),
+        snr_db=float(snr_db),
+        present=present,
+        doppler_mps=0.0,
+        angle_deg=angle_deg,
+        gesture=GESTURE_NONE if not publisher.no_gesture else None,
+    )
+    return StreamFrameResult(
+        published=published,
+        present=present,
+        range_m=float(range_m),
+        snr_db=float(snr_db),
+        doppler_mps=0.0,
+        angle_deg=angle_deg,
+        track1_doppler_mps=rd_doppler_mps,
+        gesture=GESTURE_NONE,
     )
 
 
@@ -122,8 +230,13 @@ def _publish_tracking_frame(
     tracker: RangePeakTracker,
     dt_s: float,
     osc_gesture_limiter: OscGestureRateLimiter,
+    *,
+    frame_int16: np.ndarray | None = None,
+    range_time_processor=None,
+    angle_fft_bins: int = 128,
+    angle_fov_deg: float = 90.0,
 ) -> StreamFrameResult | None:
-    tracks = tracker.update(peaks, dt_s, peak_cfg)
+    tracks = tracker.update(peaks, dt_s, peak_cfg, track_cfg=tracker.cfg)
     body = _track_by_id(tracks, 1)
     hand = _track_by_id(tracks, 2)
     if body is None:
@@ -154,7 +267,7 @@ def _publish_tracking_frame(
             )
         return result
 
-    present = body.snr_db >= peak_cfg.snr_threshold_db
+    present = body.snr_db >= peak_cfg.body_snr_threshold_db
     confirmed = gesture_from_tracks(tracks)
     osc_confirmed = gesture_for_osc(
         confirmed,
@@ -174,6 +287,22 @@ def _publish_tracking_frame(
     snr2 = hand.snr_db if hand is not None else None
     id2 = hand.track_id if hand is not None else None
 
+    angle_deg: float | None = None
+    body_doppler_mps: float | None = None
+    if (
+        frame_int16 is not None
+        and range_time_processor is not None
+        and not publisher.no_angle
+    ):
+        est = range_time_processor.angle_at_range_m(
+            frame_int16,
+            body.range_m,
+            n_bins=angle_fft_bins,
+            fov_deg=angle_fov_deg,
+        )
+        if est is not None:
+            angle_deg, body_doppler_mps = est
+
     published = publisher.send_frame(
         range_m=body.range_m,
         snr_db=body.snr_db,
@@ -181,6 +310,7 @@ def _publish_tracking_frame(
         range2_m=r2,
         snr2_db=snr2,
         doppler_mps=vel,
+        angle_deg=angle_deg,
         gesture=gest_osc,
     )
 
@@ -194,5 +324,7 @@ def _publish_tracking_frame(
         track1_id=body.track_id,
         track2_id=id2,
         doppler_mps=vel,
+        angle_deg=angle_deg,
+        track1_doppler_mps=body_doppler_mps,
         gesture=confirmed,
     )

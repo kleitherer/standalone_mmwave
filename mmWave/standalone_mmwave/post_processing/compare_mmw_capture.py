@@ -98,24 +98,34 @@ def _inverse_fix_byte_order(u16: np.ndarray) -> np.ndarray:
     return out
 
 
+# Minimal TLV block from a native mmw capture (zero detected objects, header_size=64).
+_MMW_TLV_TEMPLATE = bytes.fromhex(
+    "f00000000000000044074000040200020005000000000000000000000000040030000"
+    "c0000000000000000000f0f0f0f0f0f0f0f0f0f0f0f"
+) + bytes(248 - 56)
+
+
 def _synthetic_mmw_stream(
     frame_int16: np.ndarray,
     params: dict,
     *,
     iq_mode: str = "standalone_lvds",
+    prefix: bytes = b"",
 ) -> bytes:
     """
     Wrap one standalone frame in mmw HSI header structure for ``decode_data``.
 
     Payload per chirp: int16 Re,Im pairs so ``decode_data``'s ``[::2]*1j+[1::2]``
     recovers the complex chirp (matches standalone LVDS when iq_mode=standalone_lvds).
+
+    ``prefix`` (typically ``HSI_HEADER_ID2``) must be supplied **before**
+    ``_inverse_fix_byte_order`` so frame boundaries survive ``fix_byte_order``
+    inside ``decode_data``.
     """
     header_size = 56
     hsi1 = b"\xdc\x0a\xda\x0c\xdc\x0a\xda\x0c"
-    hsi2 = b"\xc9\x0c\xcc\x09\xc9\x0c\xcc\x09"
 
     n_chirps = int(params["n_chirps"])
-    n_rx = int(params["n_rx"])
 
     if iq_mode == "standalone_lvds":
         adc = frame_to_adc_cube(frame_int16, params)
@@ -131,9 +141,8 @@ def _synthetic_mmw_stream(
         reim[1::2] = flat.imag.astype(np.int16)
         chirp_payloads.append(chirp_header + reim.tobytes())
 
-    tlv_block = bytes(header_size)
-    frame_body = tlv_block + hsi1 + hsi1.join(chirp_payloads)
-    # Single-frame packet (no leading HSI2 stub — avoids wrong num_chirps median)
+    tlv_block = _MMW_TLV_TEMPLATE
+    frame_body = prefix + tlv_block + hsi1 + hsi1.join(chirp_payloads)
     u16 = np.frombuffer(frame_body, dtype=np.uint16)
     wire = _inverse_fix_byte_order(u16)
     return wire.tobytes()

@@ -8,7 +8,7 @@
 | `tracker.py` | Nearest-neighbor tracking (1–2 IDs), velocity history |
 | `gesture.py` | push / pull / none from `d(range)/dt` |
 | `osc.py` | OSC addresses + `OscPublisher` (shared by live & replay) |
-| `mode.py` | Select config1 vs config2; build processor |
+| `mode.py` | Select config1 / config2 / off; build processor |
 | `simple.py` | Config2: strongest peak + 2-point velocity |
 | `publisher.py` | One function: peaks + processor → OSC |
 | `status.py` | One terminal status formatter |
@@ -23,15 +23,24 @@ Set `gesture.mode` in `config/live_radar_to_max.json`:
 | Mode | Description |
 |------|-------------|
 | **`config1`** | 2-ID NN tracker (body + hands). Toggle with `config1.enabled`. |
-| **`config2`** | Single strongest peak; velocity from **last two frames** only. |
+| **`config2`** | Closest-range peak; velocity from **last two frames**; gesture on `/radar/doppler_mps`. |
+| **`off`** | No tracking, no gestures. Strongest peak → `range_m`, `snr_db`, `presence` only (optional `angle_deg`). |
 
-Switch to config2:
+Switch mode in `config/live_radar_to_max.json`:
 
 ```json
-"gesture": { "mode": "config2" }
+"gesture": { "enabled": true, "mode": "config2" }
 ```
 
-Or disable config1 (falls back to config2):
+Turn tracking and gestures off entirely:
+
+```json
+"gesture": { "enabled": false }
+```
+
+or `"mode": "off"` (same result).
+
+Disable config1 only (falls back to config2):
 
 ```json
 "gesture": { "mode": "config1", "config1": { "enabled": false, ... } }

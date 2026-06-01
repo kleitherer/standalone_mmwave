@@ -4,7 +4,8 @@ Capture analysis plots.
 
 Settings: config/live_radar_to_max.json
   processing.roi_min_m / roi_max_m  — range gate for all outputs
-  post_processing.write_range_time_snr — range vs time overview
+  post_processing.write_range_time_snr — range vs time SNR overview
+  post_processing.write_range_time_declutter_power — same pipeline, power (dB) not SNR
   post_processing.write_rd_movie       — per-frame RD movie (ROI-gated)
   post_processing.rd_snapshot_frame    — optional single RD png (frame index)
 
@@ -77,6 +78,55 @@ def _plot_range_time_snr(vol: RangeTimeVolume, out_dir: Path, range_max_m: float
     plt.close(fig)
 
 
+def _plot_range_time_declutter_power(
+    vol: RangeTimeVolume,
+    out_dir: Path,
+    *,
+    range_max_m: float,
+    use_percentile: bool,
+    vmin_db: float,
+    vmax_db: float,
+) -> None:
+    """Background-subtracted RD power (same chain as SNR, without median noise floor)."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    t = vol.time_s
+    r = vol.range_m
+    power = vol.declutter_db
+    extent = [t[0], t[-1] if len(t) > 1 else t[0] + 1, r[0], r[-1]]
+
+    if use_percentile:
+        vmin = float(np.percentile(power, 5))
+        vmax = float(np.percentile(power, 99))
+    else:
+        vmin, vmax = vmin_db, vmax_db
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+    im = ax.imshow(
+        power.T,
+        aspect="auto",
+        origin="lower",
+        extent=extent,
+        cmap="viridis",
+        vmin=vmin,
+        vmax=vmax,
+        interpolation="nearest",
+    )
+    ax.set_xlabel("time (s)")
+    ax.set_ylabel("range (m)")
+    ax.set_title(
+        f"{vol.session_id} — Power (dB), BG-subtracted, max over Doppler  "
+        f"[{r[0]:.1f}–{range_max_m:.1f} m]"
+    )
+    fig.colorbar(im, ax=ax, label="Power (dB)")
+    fig.tight_layout()
+    fig.savefig(out_dir / "range_time_declutter_power.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
 def parse_args():
     p = argparse.ArgumentParser(
         description="Capture analysis (settings: config/live_radar_to_max.json)"
@@ -111,16 +161,33 @@ def main() -> int:
     if gate_info is not None:
         proc.save_applied(out_dir / "range_gate.json", gate_info)
 
-    if not pp.write_range_time_snr and not pp.write_rd_movie and pp.rd_snapshot_frame is None:
-        print("Nothing to write — enable write_range_time_snr or write_rd_movie in config")
+    write_rt = pp.write_range_time_snr or pp.write_range_time_declutter_power
+    if not write_rt and not pp.write_rd_movie and pp.rd_snapshot_frame is None:
+        print(
+            "Nothing to write — enable write_range_time_snr, "
+            "write_range_time_declutter_power, or write_rd_movie in config"
+        )
         return 0
 
-    if pp.write_range_time_snr:
-        print("Building range–time SNR…")
+    if write_rt:
+        bg_mode = (
+            "session mean (all frames)"
+            if proc.background_session_mean
+            else f"start frames (first {proc.declutter_mean_frames})"
+        )
+        snr_noise = (
+            "per-frame ROI median"
+            if proc.snr_per_frame_median
+            else f"fixed calib median (first {proc.snr_calibration_frames or proc.declutter_mean_frames} frames)"
+        )
+        print(f"  Background: {bg_mode}")
+        print(f"  SNR noise:  {snr_noise}")
+        print("Building range–time volume…")
         vol = build_range_time_volume(
             capture,
             range_gate_m=(r_min, r_max),
             clutter_window=proc.declutter_mean_frames,
+            background_session_mean=proc.background_session_mean,
             background_capture=proc.background.capture,
             background_max_frames=proc.background.max_frames,
             angle_bins=proc.angle.fft_bins,
@@ -130,21 +197,42 @@ def main() -> int:
             snr_threshold_db=proc.snr_threshold_db,
             max_frames=args.max_frames,
             limiter=pp.range_time_limiter,
+            snr_per_frame_median=proc.snr_per_frame_median,
+            snr_calibration_frames=proc.snr_calibration_frames,
         )
-        _plot_range_time_snr(vol, out_dir, range_max_m=r_max)
-        np.savez_compressed(
-            out_dir / "range_time_snr.npz",
-            snr_db=vol.snr_db,
-            time_s=vol.time_s,
-            range_m=vol.range_m,
-            snr_threshold_db=vol.snr_threshold_db,
-            range_min_m=r_min,
-            range_max_m=r_max,
-        )
-        n_above = int(np.sum(vol.mask()))
         print(f"  {vol.snr_db.shape[0]} frames × {vol.snr_db.shape[1]} range bins")
-        print(f"  pixels ≥ {proc.snr_threshold_db} dB: {n_above}")
-        print(f"  {out_dir.resolve()}/range_time_snr.png")
+        if pp.write_range_time_snr:
+            _plot_range_time_snr(vol, out_dir, range_max_m=r_max)
+            np.savez_compressed(
+                out_dir / "range_time_snr.npz",
+                snr_db=vol.snr_db,
+                time_s=vol.time_s,
+                range_m=vol.range_m,
+                snr_threshold_db=vol.snr_threshold_db,
+                range_min_m=r_min,
+                range_max_m=r_max,
+            )
+            n_above = int(np.sum(vol.mask()))
+            print(f"  pixels ≥ {proc.snr_threshold_db} dB: {n_above}")
+            print(f"  {out_dir.resolve()}/range_time_snr.png")
+        if pp.write_range_time_declutter_power:
+            _plot_range_time_declutter_power(
+                vol,
+                out_dir,
+                range_max_m=r_max,
+                use_percentile=pp.percentile_color_scale,
+                vmin_db=pp.rd_vmin_db,
+                vmax_db=pp.rd_vmax_db,
+            )
+            np.savez_compressed(
+                out_dir / "range_time_declutter_power.npz",
+                power_db=vol.declutter_db,
+                time_s=vol.time_s,
+                range_m=vol.range_m,
+                range_min_m=r_min,
+                range_max_m=r_max,
+            )
+            print(f"  {out_dir.resolve()}/range_time_declutter_power.png")
 
     if pp.write_rd_movie or pp.rd_snapshot_frame is not None:
         print("Building RD movie / snapshot…")

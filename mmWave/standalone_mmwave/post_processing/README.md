@@ -1,73 +1,96 @@
-# Post-processing
+# Post-processing plots
 
-This repo now keeps only the heatmap path for offline analysis.
-By default it reads processing values from `config/live_radar_to_max.json`.
+All scripts read `config/live_radar_to_max.json` unless you pass `--config`.  
+Input is always **`captures/<session>/raw/frame_*.npy`** (header-stripped ADC int16).
 
-## Range–azimuth movie (per frame)
-
-```bash
-python3 -m post_processing.plot_range_azimuth_movie --capture captures/push_pull
-python3 -m post_processing.plot_range_azimuth_movie --capture push_pull --angle-bins 1024 --format mp4
-```
-
-Output: `<capture>/analysis/range_azimuth_movie.mp4` (or `.gif` without ffmpeg).
-
-Same processing as the static `range_azimuth.png`: per range bin, pick strongest Doppler then antenna FFT (live-style).
-
-## Range-time SNR heatmap
+## Main entry: `plot_heatmap`
 
 ```bash
-python3 -m post_processing.plot_heatmap \
-  --capture captures/20260526_115526_push_pull
+python3 -m post_processing.plot_heatmap --capture testing_gesture_osc
 ```
 
-Optional dedicated background capture:
+Writes under `<capture>/analysis/` (controlled by `post_processing.*` flags):
 
-```bash
-python3 -m post_processing.plot_heatmap \
-  --capture captures/20260526_115526_push_pull \
-  --background-capture captures/your_empty_room
+| Output | What it is |
+|--------|------------|
+| **`range_time_snr.png`** | **SNR (dB)** vs time × range. Primary tracking view. |
+| **`range_time_declutter_power.png`** | Same processing chain as SNR, but **power (dB)** after background subtract (no per-frame noise step). |
+| **`range_time_snr.npz`** | Arrays: `snr_db`, `time_s`, `range_m`, … |
+| **`range_time_declutter_power.npz`** | Arrays: `power_db`, `time_s`, `range_m` |
+| **`rd_heatmap_movie.mp4`** | Per-frame range–Doppler movies (if `write_rd_movie`) |
+| **`rd_heatmap_frame<N>.png`** | Single RD snapshot (if `rd_snapshot_frame` set) |
+
+### Processing chain (range–time plots)
+
+Shared steps for SNR and declutter-power:
+
+1. **Chirp-mean declutter** — subtract mean over slow-time chirps before FFT (per frame).
+2. **Optional limiter** — `post_processing.range_time_limiter` (1-bit IQ; display only).
+3. **RD FFT** — standalone pipeline: Hann window, range + Doppler FFT, `mean(|RDa|²)` → dB.
+4. **Background subtract** — subtract a global RD clutter map:
+   - `background_session_mean: true` → mean over **all frames** in the capture.
+   - `background_session_mean: false` → mean of first `declutter_mean_frames` only.
+   - Or separate empty-room capture via `background.capture` in config.
+5. **Range gate** — `processing.roi_min_m` … `roi_max_m`.
+6. **Collapse Doppler** — `max` over Doppler → one value per range bin per frame.
+
+**SNR only (step 7):** subtract the **per-frame mean** of the background-subtracted RD ROI (all Doppler×range cells in gate), then max over Doppler:
+
+```text
+SNR(d, r) = RD_declutter(d, r) − mean(RD_declutter in ROI this frame)
+range–time cell = max_d SNR(d, r)
 ```
 
-Outputs in `<capture>/analysis/`:
+Uses **mean** (not median) so the noise reference tracks the average cell level; bright targets pull the reference up slightly, which you found works better than median here.
 
-- `range_time_snr.png`: SNR (dB) vs range and time
-- `doppler_time_snr.png`: SNR (dB) vs Doppler and time (max over range)
-- `azimuth_time_snr_fft.png` (or `_music`): SNR (dB) vs azimuth and time (max over range)
-- `range_time_mask.png`: pixels above threshold only
-- `range_doppler_mean.png`: average range-Doppler map
-- `range_doppler_peak.png`: peak range-Doppler SNR over time
-- `range_doppler_raw_vs_decluttered.png`: raw vs decluttered RD means
-- `range_azimuth_fft.png` or `range_azimuth_music.png`: range–azimuth heatmap (x = angle, y = range)
-- `range_azimuth_<method>.npz`: arrays for custom plots
-- `range_time_raw_vs_decluttered.png`: side-by-side raw vs clutter-removed
-- `range_time_snr.npz`: arrays (`snr_db`, `raw_db`, `declutter_db`, `time_s`, `range_m`, ...)
+**Declutter-power** stops after step 6 — no step 7. Expect a higher floor and more “smear” around targets.
 
-## Processing alignment with live
+### Other plot scripts
 
-- Declutter method is global-mean only.
-- Background is the global mean RD map from the first `declutter_mean_frames` frames of the capture (or a separate empty-room capture). Live streaming uses `calibration_frames: 0` so recording starts immediately with no warmup.
-- SNR is computed from decluttered RD power relative to per-frame median noise floor.
-- Range limits use `processing.roi_min_m` / `processing.roi_max_m` from `config/live_radar_to_max.json`.
-- Azimuth uses `angle_estimation.method`: `fft` (default) or `music` (super-resolution).
+| Script | Output | Notes |
+|--------|--------|--------|
+| `plot_range_time_power` | `range_time_power.png` | **Different pipeline**: mmw `rd_heatmap` style, raw power, **no** background subtract. For reference NPZ / mmw parity. |
+| `plot_range_peaks` | `range_time_peaks.png` | Peak tracks on range–time SNR. |
+| `plot_rd_movie` | RD movie | Same RD display settings as heatmap movie path. |
+| `plot_range_azimuth_movie` | `range_azimuth_movie.mp4` | Range × azimuth over time. |
+| `plot_ud_continuous` | Micro-Doppler PNG | Slow-time / STFT uD from cube or NPZ. |
+| `plot_rd_frame` | Debug RD png | Raw vs decluttered vs SNR for one frame. |
+
+---
+
+## Why does the background look louder when someone is in the frame?
+
+Same room, but the **map is per-frame** and a person is a **distributed strong reflector**. You see higher “background” when a target is present mainly because of **processing**, not because the empty room got noisier:
+
+1. **FFT sidelobes + Hann window** — A strong return spreads energy into neighboring Doppler and range bins. **`max over Doppler`** then reports that leakage at many range cells → vertical smear and elevated power around the target on **`range_time_declutter_power`**.
+
+2. **Session-mean background** — With `background_session_mean: true`, the clutter map includes frames **with** the person. That helps subtract static walls, but the template is wrong for frames where the person is at a **different** range/Doppler, and it never fully removes **moving** energy. Residual + sidelobes raise the floor on target frames.
+
+3. **Per-frame mean SNR step** — On target frames, many bins are bright, so the **mean** noise reference is **higher** than on empty frames. After subtraction, empty-looking range bins can still show sidelobe peaks above the reference; on **`declutter_power`** (no mean step) the whole frame looks brighter when the target is on.
+
+4. **Physical spread** — Torso, arms, and multipath fill multiple range/Doppler cells; that is real energy, not just one bin.
+
+**SNR** (`range_time_snr.png`) hides much of this via step 7 (per-frame mean). **Declutter-power** shows it raw — use SNR for tracking, power for comparing to mmw reference or debugging clutter.
+
+---
+
+## Config cheat sheet (`processing` + `post_processing`)
 
 ```json
-"angle_estimation": {
-  "method": "fft",
-  "fft_bins": 128,
-  "fov_deg": 90
+"processing": {
+  "roi_min_m": 0.3,
+  "roi_max_m": 3.4,
+  "declutter_mean_frames": 45,
+  "background_session_mean": true,
+  "snr_per_frame_median": true
+},
+"post_processing": {
+  "write_range_time_snr": true,
+  "write_range_time_declutter_power": true,
+  "range_time_limiter": true,
+  "write_rd_movie": true
 }
 ```
 
-```bash
-python3 -m post_processing.plot_heatmap --capture captures/your_capture --angle-method music
-```
-
-## Range–Doppler movie (frame-by-frame)
-
-```bash
-python3 -m post_processing.plot_rd_movie --capture captures/push_pull
-python3 -m post_processing.plot_rd_movie --capture push_pull --format gif --fps 15
-```
-
-Output: `<capture>/analysis/rd_heatmap_movie.mp4` (or `.gif`). Uses same config/declutter/ROI as other post-processing. MP4 needs `ffmpeg` installed.
+`snr_per_frame_median: true` → per-frame mean/median via `rd_to_snr_db` (mean in code today).  
+`false` → fixed noise from first N frames (legacy; usually worse for gesture clips).

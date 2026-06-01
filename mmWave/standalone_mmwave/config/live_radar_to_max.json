@@ -16,6 +16,8 @@
     "presence_threshold_db": 0.0,
     "calibration_frames": 0,
     "declutter_mean_frames": 45,
+    "background_session_mean": true,
+    "snr_per_frame_median": true,
     "frame_average_count": 1,
     "smooth_alpha": 0.0
   },
@@ -23,9 +25,9 @@
     "rd_pipeline": "standalone",
     "rd_full_range": false,
     "rd_display": "raw_power",
-    "subtract_background": false,
-    "auto_range_gate": false,
+    "subtract_background": true,
     "write_range_time_snr": true,
+    "write_range_time_declutter_power": true,
     "range_time_limiter": true,
     "write_rd_movie": true,
     "rd_snapshot_frame": 495,
@@ -41,12 +43,13 @@
     "rd_interpolation": "bilinear"
   },
   "gesture": {
+    "enabled": false,
     "mode": "config1",
     "config1": {
       "enabled": true,
       "max_tracks": 2,
       "associate_gate_m": 0.15,
-      "max_range_jump_m": 0.60,
+      "max_range_jump_m": 0.6,
       "min_hand_ahead_m": 0.3,
       "max_hand_ahead_m": 0.55,
       "history_frames": 12,
@@ -54,20 +57,21 @@
       "min_velocity_mps": 0.15,
       "gesture_confirm_frames": 3,
       "body_slower_than_hand": true,
-      "body_hand_velocity_margin_mps": 0.05,
+      "body_hand_velocity_margin_mps": 0.1,
       "body_calibration_s": 0,
-      "body_calibration_max_velocity_mps": 0.10,
+      "body_calibration_max_velocity_mps": 0.1,
       "body_anchor_blend": 0.5,
       "body_snr_margin_db": 6.0,
-      "body_max_velocity_for_gesture_mps": 0.0
+      "body_max_velocity_for_gesture_mps": 0.2,
+      "hand_snr_threshold_db": 14.0
     },
     "config2": {
-      "min_velocity_mps": 0.10,
+      "min_velocity_mps": 0.1,
       "gesture_confirm_frames": 2
     }
   },
   "run": {
-    "duration_sec": 30
+    "duration_sec": 0
   },
   "capture": {
     "enabled": true,
@@ -97,8 +101,14 @@
     },
     "plot": {
       "dpi": 150,
-      "figsize_range_time": [12, 5],
-      "figsize_profiles": [12, 8],
+      "figsize_range_time": [
+        12,
+        5
+      ],
+      "figsize_profiles": [
+        12,
+        8
+      ],
       "profile_count": 6,
       "profile_frame_indices": [],
       "heatmap_cmap": "viridis",
@@ -121,6 +131,6 @@
     "snr_address": "/radar/snr_db",
     "presence_address": "/radar/presence",
     "gesture_address": "/radar/gesture",
-    "send_angle": false
+    "send_angle": true
   }
 }

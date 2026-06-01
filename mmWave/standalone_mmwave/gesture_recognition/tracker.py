@@ -36,6 +36,7 @@ class TrackingConfig:
     body_anchor_blend: float = 0.5
     body_snr_margin_db: float = 6.0
     body_max_velocity_for_gesture_mps: float = 0.10
+    hand_snr_threshold_db: float = 10.0
 
     @classmethod
     def from_settings(cls, settings: dict[str, Any]) -> TrackingConfig:
@@ -70,6 +71,7 @@ class TrackingConfig:
             body_max_velocity_for_gesture_mps=float(
                 block.get("body_max_velocity_for_gesture_mps", 0.10)
             ),
+            hand_snr_threshold_db=float(block.get("hand_snr_threshold_db", 10.0)),
         )
 
 
@@ -182,7 +184,7 @@ class RangePeakTracker:
         if self.body_calibration_active:
             return
         for r_meas, snr_meas in measurements:
-            if float(snr_meas) < peak_cfg.snr_threshold_db:
+            if float(snr_meas) < peak_cfg.body_snr_threshold_db:
                 continue
             self._spawn_body_track(float(r_meas), float(snr_meas))
             return
@@ -193,7 +195,7 @@ class RangePeakTracker:
         peak_cfg: RangePeakDetectionConfig,
     ) -> tuple[float, float] | None:
         for r_meas, snr_meas in measurements:
-            if float(snr_meas) >= peak_cfg.snr_threshold_db:
+            if float(snr_meas) >= peak_cfg.body_snr_threshold_db:
                 return float(r_meas), float(snr_meas)
         return None
 
@@ -248,6 +250,8 @@ class RangePeakTracker:
         measurements: list[tuple[float, float]],
         dt_s: float,
         peak_cfg: RangePeakDetectionConfig,
+        *,
+        track_cfg: TrackingConfig | None = None,
     ) -> list[TrackedTarget]:
         """
         Associate peaks ``[(range_m, snr_db), ...]`` (SNR-sorted) to tracks.
@@ -257,6 +261,11 @@ class RangePeakTracker:
         gesture=none.
         """
         dt_s = max(float(dt_s), 1e-6)
+        hand_snr_thr = (
+            float(track_cfg.hand_snr_threshold_db)
+            if track_cfg is not None
+            else peak_cfg.body_snr_threshold_db
+        )
         if not self._update_body_calibration(measurements, dt_s, peak_cfg):
             return []
         self._ensure_body_track(measurements, peak_cfg)
@@ -295,7 +304,13 @@ class RangePeakTracker:
                 max_abs_velocity_mps=hand_v_ceiling,
                 body_anchor_m=body_anchor if track.track_id == 1 else None,
                 body_anchor_blend=self.cfg.body_anchor_blend,
-                min_snr_db=body_min_snr if track.track_id == 1 else None,
+                min_snr_db=(
+                    body_min_snr
+                    if track.track_id == 1 and body_min_snr is not None
+                    else peak_cfg.body_snr_threshold_db
+                    if track.track_id == 1
+                    else hand_snr_thr
+                ),
             )
             if best_j is None:
                 continue
@@ -368,7 +383,7 @@ class RangePeakTracker:
             for j, (r_meas, snr_meas) in enumerate(measurements):
                 if j in matched_meas:
                     continue
-                if float(snr_meas) < peak_cfg.snr_threshold_db:
+                if float(snr_meas) < hand_snr_thr:
                     continue
                 r = float(r_meas)
                 if not _hand_range_valid(r, body.range_m, self.cfg.min_hand_ahead_m):
@@ -558,8 +573,10 @@ def simulate_tracking_volume(
     tracker = RangePeakTracker(track_cfg)
     dt_s = max(float(dt_s), 1e-6)
     for fi in range(n_frames):
-        peaks = peaks_from_profile(snr_db[fi], range_m, peak_cfg)
-        tracks = tracker.update(peaks, dt_s, peak_cfg)
+        peaks = peaks_from_profile(
+            snr_db[fi], range_m, peak_cfg, for_tracking=True, track_cfg=track_cfg
+        )
+        tracks = tracker.update(peaks, dt_s, peak_cfg, track_cfg=track_cfg)
         t1 = _track_by_id(tracks, 1)
         t2 = _track_by_id(tracks, 2)
         if t1 is not None:
