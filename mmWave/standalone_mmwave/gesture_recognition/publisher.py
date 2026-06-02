@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import numpy as np
+
 from gesture_recognition.gesture import (
     GESTURE_NONE,
     GESTURE_PULL,
@@ -12,6 +14,7 @@ from gesture_recognition.gesture import (
 from gesture_recognition.mode import GestureProcessor
 from gesture_recognition.osc import OscPublisher
 from gesture_recognition.peaks import RangePeakDetectionConfig
+from gesture_recognition.rd_peak import RdKalmanProcessor, RdPeakProcessor
 from gesture_recognition.simple import SimpleGestureProcessor
 from gesture_recognition.status import StreamFrameResult
 from gesture_recognition.tracker import (
@@ -33,13 +36,26 @@ def publish_radar_frame(
     range_time_processor=None,
     angle_fft_bins: int = 128,
     angle_fov_deg: float = 90.0,
+    radar_params: dict | None = None,
 ) -> StreamFrameResult | None:
     """
     Publish one frame to Max from range peaks + optional gesture processor.
 
     ``processor`` is :class:`RangePeakTracker` (config1), :class:`SimpleGestureProcessor`
-    (config2), or ``None`` (tracking/gesture off — strongest peak only).
+    (config2), :class:`RdPeakProcessor` (config3/config4), :class:`RdKalmanProcessor`
+    (config5), or ``None`` (tracking/gesture off).
     """
+    if isinstance(processor, (RdPeakProcessor, RdKalmanProcessor)):
+        if frame_int16 is None or radar_params is None:
+            return None
+        return _publish_rd_peak_frame(
+            publisher,
+            peak_cfg,
+            processor,
+            frame_int16,
+            radar_params,
+        )
+
     if peaks is None:
         return None
 
@@ -151,6 +167,77 @@ def _publish_direct_frame(
         doppler_mps=0.0,
         angle_deg=angle_deg,
         track1_doppler_mps=rd_doppler_mps,
+        gesture=GESTURE_NONE,
+    )
+
+
+def _publish_rd_peak_frame(
+    publisher: OscPublisher,
+    peak_cfg: RangePeakDetectionConfig,
+    processor: RdPeakProcessor,
+    frame_int16: np.ndarray,
+    radar_params: dict,
+) -> StreamFrameResult:
+    """Config3: global max on antenna-averaged RD power → range_m + doppler_mps."""
+    target = processor.detect(frame_int16, radar_params)
+    if target is None:
+        if not publisher.emit_below_threshold:
+            publisher.send_frame(
+                range_m=0.0,
+                snr_db=0.0,
+                present=False,
+                doppler_mps=0.0,
+                gesture=GESTURE_NONE,
+            )
+        return StreamFrameResult(
+            published=False,
+            present=False,
+            range_m=0.0,
+            snr_db=0.0,
+            doppler_mps=0.0,
+            gesture=GESTURE_NONE,
+        )
+
+    present = float(target.snr_db) >= peak_cfg.body_snr_threshold_db
+    if not present and not publisher.emit_below_threshold:
+        publisher.send_frame(
+            range_m=0.0,
+            snr_db=0.0,
+            present=False,
+            doppler_mps=0.0,
+            gesture=GESTURE_NONE,
+        )
+        return StreamFrameResult(
+            published=False,
+            present=False,
+            range_m=target.range_m,
+            snr_db=target.snr_db,
+            doppler_mps=target.doppler_mps,
+            angle_deg=target.angle_deg,
+            x_m=target.x_m,
+            y_m=target.y_m,
+            gesture=GESTURE_NONE,
+        )
+
+    published = publisher.send_frame(
+        range_m=target.range_m,
+        snr_db=target.snr_db,
+        present=present,
+        doppler_mps=target.doppler_mps,
+        angle_deg=target.angle_deg,
+        x_m=target.x_m,
+        y_m=target.y_m,
+        gesture=GESTURE_NONE if not publisher.no_gesture else None,
+    )
+    return StreamFrameResult(
+        published=published,
+        present=present,
+        range_m=target.range_m,
+        snr_db=target.snr_db,
+        doppler_mps=target.doppler_mps,
+        angle_deg=target.angle_deg,
+        x_m=target.x_m,
+        y_m=target.y_m,
         gesture=GESTURE_NONE,
     )
 

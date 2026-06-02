@@ -30,6 +30,13 @@ from gesture_recognition.mode import (
     simulate_gesture_volume,
 )
 from gesture_recognition.publisher import publish_radar_frame
+from gesture_recognition.rd_peak import (
+    RdKalmanConfig,
+    RdKalmanProcessor,
+    RdPeakConfig,
+    RdPeakProcessor,
+    RdPeakTarget,
+)
 from gesture_recognition.simple import SimpleGestureConfig, SimpleGestureProcessor
 from gesture_recognition.status import StreamFrameResult, format_status_line
 from gesture_recognition.tracker import (
@@ -65,6 +72,11 @@ __all__ = [
     "gesture_from_tracks",
     "osc_targets_from_profile",
     "peaks_from_profile",
+    "RdPeakConfig",
+    "RdPeakProcessor",
+    "RdPeakTarget",
+    "RdKalmanConfig",
+    "RdKalmanProcessor",
     "SimpleGestureConfig",
     "SimpleGestureProcessor",
     "active_gesture_mode",

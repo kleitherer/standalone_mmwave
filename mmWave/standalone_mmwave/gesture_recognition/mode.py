@@ -1,16 +1,25 @@
-"""Gesture mode selection: config1 (2-ID tracking), config2 (simple), or off."""
+"""Gesture mode selection: config1/config2/config3/config4/config5/config6 or off."""
 
 from __future__ import annotations
 
-from typing import Any, Literal, Union
+from typing import Any, Literal, TYPE_CHECKING, Union
 
 import numpy as np
 
 from gesture_recognition.simple import SimpleGestureConfig, SimpleGestureProcessor
 from gesture_recognition.tracker import RangePeakTracker, TrackingConfig, TrackingVolume
 
-GestureModeName = Literal["config1", "config2", "off"]
-GestureProcessor = Union[RangePeakTracker, SimpleGestureProcessor, None]
+if TYPE_CHECKING:
+    from gesture_recognition.rd_peak import RdKalmanProcessor, RdPeakProcessor
+
+GestureModeName = Literal["config1", "config2", "config3", "config4", "config5", "config6", "off"]
+GestureProcessor = Union[
+    RangePeakTracker,
+    SimpleGestureProcessor,
+    "RdPeakProcessor",
+    "RdKalmanProcessor",
+    None,
+]
 
 
 def _raw_mode_string(settings: dict[str, Any]) -> str:
@@ -38,11 +47,24 @@ def active_gesture_mode(settings: dict[str, Any]) -> GestureModeName:
     - ``off``: no tracking, no gestures (strongest peak → range / SNR / presence only)
     - ``config1``: 2-ID NN tracker + hand gestures
     - ``config2``: single closest peak + velocity gestures
+    - ``config3``: RD-map peak → range_m + doppler_mps (no tracking / gestures)
+    - ``config4``: config3 + continuity rule (limit range jumps)
+    - ``config5``: Kalman-smoothed RD peaks (range + doppler + angle)
+    - ``config6``: config4 + Doppler continuity (limit velocity jumps)
     """
+    mode = _raw_mode_string(settings)
+    if mode in ("config3", "rd", "rd_peak"):
+        return "config3"
+    if mode in ("config4", "rd_continuity", "rd_jump"):
+        return "config4"
+    if mode in ("config5", "rd_kalman", "kalman"):
+        return "config5"
+    if mode in ("config6", "rd_continuity_v", "rd_jump_v"):
+        return "config6"
+
     if not gesture_enabled(settings):
         return "off"
 
-    mode = _raw_mode_string(settings)
     if mode in ("off", "none", "disabled", "false"):
         return "off"
     if mode in ("config2", "simple", "velocity"):
@@ -62,6 +84,53 @@ def make_gesture_processor(settings: dict[str, Any]) -> GestureProcessor:
     mode = active_gesture_mode(settings)
     if mode == "off":
         return None
+    if mode == "config3":
+        from gesture_recognition.rd_peak import RdPeakConfig, RdPeakProcessor
+
+        return RdPeakProcessor(RdPeakConfig.from_settings(settings))
+    if mode == "config4":
+        from gesture_recognition.rd_peak import RdPeakConfig, RdPeakProcessor
+
+        cfg = RdPeakConfig.from_settings(settings)
+        block = settings.get("gesture", {}).get("config4", {})
+        if isinstance(block, dict):
+            cfg = RdPeakConfig(
+                min_range_m=float(block.get("min_range_m", cfg.min_range_m)),
+                max_range_m=float(block.get("max_range_m", cfg.max_range_m)),
+                power_threshold_db=float(block.get("power_threshold_db", cfg.power_threshold_db)),
+                max_abs_doppler_mps=float(block.get("max_abs_doppler_mps", cfg.max_abs_doppler_mps)),
+                max_abs_angle_deg=float(block.get("max_abs_angle_deg", cfg.max_abs_angle_deg)),
+                max_range_jump_m=float(block.get("max_range_jump_m", 1.0)),
+                max_candidates=max(1, int(block.get("max_candidates", cfg.max_candidates))),
+                declutter=bool(block.get("declutter", cfg.declutter)),
+                window=bool(block.get("window", cfg.window)),
+                n_angle_fft=max(2, int(block.get("n_angle_fft", cfg.n_angle_fft))),
+            )
+        return RdPeakProcessor(cfg)
+    if mode == "config5":
+        from gesture_recognition.rd_peak import RdKalmanConfig, RdKalmanProcessor
+
+        return RdKalmanProcessor(RdKalmanConfig.from_settings(settings))
+    if mode == "config6":
+        from gesture_recognition.rd_peak import RdPeakConfig, RdPeakProcessor
+
+        cfg = RdPeakConfig.from_settings(settings)
+        block = settings.get("gesture", {}).get("config6", {})
+        if isinstance(block, dict):
+            cfg = RdPeakConfig(
+                min_range_m=float(block.get("min_range_m", cfg.min_range_m)),
+                max_range_m=float(block.get("max_range_m", cfg.max_range_m)),
+                power_threshold_db=float(block.get("power_threshold_db", cfg.power_threshold_db)),
+                max_abs_doppler_mps=float(block.get("max_abs_doppler_mps", cfg.max_abs_doppler_mps)),
+                max_doppler_jump_mps=float(block.get("max_doppler_jump_mps", 0.5)),
+                max_abs_angle_deg=float(block.get("max_abs_angle_deg", cfg.max_abs_angle_deg)),
+                max_range_jump_m=float(block.get("max_range_jump_m", 0.3)),
+                max_candidates=max(1, int(block.get("max_candidates", cfg.max_candidates))),
+                declutter=bool(block.get("declutter", cfg.declutter)),
+                window=bool(block.get("window", cfg.window)),
+                n_angle_fft=max(2, int(block.get("n_angle_fft", cfg.n_angle_fft))),
+            )
+        return RdPeakProcessor(cfg)
     if mode == "config2":
         return SimpleGestureProcessor(SimpleGestureConfig.from_settings(settings))
     return RangePeakTracker(TrackingConfig.from_settings(settings))
@@ -81,6 +150,38 @@ def describe_gesture_mode(settings: dict[str, Any]) -> str:
     mode = active_gesture_mode(settings)
     if mode == "off":
         return "Gesture off: strongest range peak → range_m / snr_db / presence (no tracks, no gesture OSC)"
+    if mode == "config3":
+        from gesture_recognition.rd_peak import RdPeakConfig
+
+        cfg = RdPeakConfig.from_settings(settings)
+        return (
+            f"Gesture config3: RD-map peak → range_m + doppler_mps + angle "
+            f"(ULA FFT n={cfg.n_angle_fft}, |angle|<={cfg.max_abs_angle_deg:.0f}°, r <= {cfg.max_range_m:.2f} m, "
+            f"power thr {cfg.power_threshold_db:.1f} dB)"
+        )
+    if mode == "config4":
+        from gesture_recognition.rd_peak import RdPeakConfig
+
+        base = RdPeakConfig.from_settings(settings)
+        c4 = settings.get("gesture", {}).get("config4", {})
+        max_jump = float(c4.get("max_range_jump_m", 1.0)) if isinstance(c4, dict) else 1.0
+        return (
+            f"Gesture config4: RD-map peak continuity (jump<={max_jump:.2f}m), "
+            f"|angle|<={base.max_abs_angle_deg:.0f}°, |doppler|<={base.max_abs_doppler_mps:.1f}m/s"
+        )
+    if mode == "config5":
+        return "Gesture config5: Kalman filter on RD peaks (range, doppler, angle)"
+    if mode == "config6":
+        from gesture_recognition.rd_peak import RdPeakConfig
+
+        base = RdPeakConfig.from_settings(settings)
+        c6 = settings.get("gesture", {}).get("config6", {})
+        range_jump = float(c6.get("max_range_jump_m", 0.3)) if isinstance(c6, dict) else 0.3
+        dop_jump = float(c6.get("max_doppler_jump_mps", 0.5)) if isinstance(c6, dict) else 0.5
+        return (
+            f"Gesture config6: RD continuity (Δr<={range_jump:.2f}m, "
+            f"Δv<={dop_jump:.2f}m/s), |angle|<={base.max_abs_angle_deg:.0f}°"
+        )
     if mode == "config2":
         cfg = SimpleGestureConfig.from_settings(settings)
         return (
@@ -105,6 +206,8 @@ def simulate_gesture_volume(
 ):
     """Replay active gesture mode over a range–time SNR volume."""
     if active_gesture_mode(settings) == "off":
+        return None
+    if active_gesture_mode(settings) in ("config3", "config4", "config5", "config6"):
         return None
 
     from gesture_recognition.simple import simulate_simple_volume

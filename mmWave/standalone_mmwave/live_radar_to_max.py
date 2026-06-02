@@ -579,31 +579,46 @@ def main() -> int:
             if cap_writer is not None:
                 cap_writer.write_frame(capture_frame, wire=wire, log=log)
 
-            peaks = range_time_processor.peaks_from_frame(capture_frame, peak_cfg, track_cfg)
-            if peaks is None:
-                now_diag = time.monotonic()
-                if now_diag - last_diag >= 2.0:
-                    calib_n = range_time_processor.frames_seen
-                    calib_total = range_time_processor._inline_calib_frames
-                    log(
-                        f"  [diag] UDP ok — frames={frames_rx} "
-                        f"calibrating {calib_n}/{calib_total} (no OSC yet)"
-                    )
-                    last_diag = now_diag
-                continue
+            if gesture_mode == "config3":
+                result = publish_radar_frame(
+                    publisher,
+                    peak_cfg,
+                    None,
+                    gesture_processor,
+                    frame_dt_s,
+                    osc_gesture_limiter,
+                    frame_int16=capture_frame,
+                    radar_params=params,
+                )
+            else:
+                peaks = range_time_processor.peaks_from_frame(
+                    capture_frame, peak_cfg, track_cfg
+                )
+                if peaks is None:
+                    now_diag = time.monotonic()
+                    if now_diag - last_diag >= 2.0:
+                        calib_n = range_time_processor.frames_seen
+                        calib_total = range_time_processor._inline_calib_frames
+                        log(
+                            f"  [diag] UDP ok — frames={frames_rx} "
+                            f"calibrating {calib_n}/{calib_total} (no OSC yet)"
+                        )
+                        last_diag = now_diag
+                    continue
 
-            result = publish_radar_frame(
-                publisher,
-                peak_cfg,
-                peaks,
-                gesture_processor,
-                frame_dt_s,
-                osc_gesture_limiter,
-                frame_int16=capture_frame if send_track1_angle else None,
-                range_time_processor=range_time_processor if send_track1_angle else None,
-                angle_fft_bins=int(ang_cfg.get("fft_bins", 128)),
-                angle_fov_deg=float(ang_cfg.get("fov_deg", 90.0)),
-            )
+                result = publish_radar_frame(
+                    publisher,
+                    peak_cfg,
+                    peaks,
+                    gesture_processor,
+                    frame_dt_s,
+                    osc_gesture_limiter,
+                    frame_int16=capture_frame if send_track1_angle else None,
+                    range_time_processor=range_time_processor if send_track1_angle else None,
+                    angle_fft_bins=int(ang_cfg.get("fft_bins", 128)),
+                    angle_fov_deg=float(ang_cfg.get("fov_deg", 90.0)),
+                    radar_params=params,
+                )
             if result is None:
                 continue
             if result.published:

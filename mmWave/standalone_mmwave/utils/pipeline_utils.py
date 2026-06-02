@@ -54,7 +54,7 @@ class radarDataLoader:
 
 
 
-def RD(radar_cube, declutter=True, window=True, r_axis=None):
+def RD(radar_cube, declutter=True, window=True, r_axis=None, quiet=False):
     '''
         Perform range and doppler FFT on radar_cube data
         Input:
@@ -81,7 +81,8 @@ def RD(radar_cube, declutter=True, window=True, r_axis=None):
     # from (Nf, Nc, Ntx, Nrx, Nsamples) to (Nf, Nc, Ntx*Nrx, Nsamples)
     RDa = RDa.reshape(RDa.shape[0], RDa.shape[1], RDa.shape[2]*RDa.shape[3], RDa.shape[4])
     # RDa = RDa[..., :8, :] # only keep the first 8 pairs
-    print(f"RDa shape: {RDa.shape}")
+    if not quiet:
+        print(f"RDa shape: {RDa.shape}")
     noise_floor_db = 10*np.log10(np.mean(np.abs(RDa.mean(axis = 2))**2))
     noise_range_db = 10*np.log10(np.mean(np.abs(RDa.mean(axis = 2))**2, axis=(0,1)))
 

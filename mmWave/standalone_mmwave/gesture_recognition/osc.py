@@ -44,6 +44,8 @@ class OscAddresses:
     snr2_db: str = "/radar/snr2_db"
     doppler_mps: str = "/radar/doppler_mps"
     angle_deg: str = "/radar/angle_deg"
+    x_m: str | None = None
+    y_m: str | None = None
     presence: str = "/radar/presence"
     gesture: str = "/radar/gesture"
     bundle: str | None = None
@@ -62,6 +64,8 @@ class OscAddresses:
             snr2_db=str(osc.get("snr2_address", "/radar/snr2_db")),
             doppler_mps=str(osc.get("doppler_address", "/radar/doppler_mps")),
             angle_deg=str(osc.get("angle_address", "/radar/angle_deg")),
+            x_m=str(osc["x_address"]) if osc.get("x_address") else None,
+            y_m=str(osc["y_address"]) if osc.get("y_address") else None,
             presence=str(osc.get("presence_address", "/radar/presence")),
             gesture=str(osc.get("gesture_address", "/radar/gesture")),
             bundle=str(bundle) if bundle else None,
@@ -84,6 +88,8 @@ class OscAddresses:
             snr2_db=getattr(args, "snr2_address", base.snr2_db),
             doppler_mps=getattr(args, "doppler_address", base.doppler_mps),
             angle_deg=getattr(args, "angle_address", base.angle_deg),
+            x_m=base.x_m,
+            y_m=base.y_m,
             presence=getattr(args, "presence_address", base.presence),
             gesture=getattr(args, "gesture_address", base.gesture),
             bundle=str(bundle) if bundle else None,
@@ -135,6 +141,8 @@ class OscPublisher:
         snr2_db: float | None = None,
         doppler_mps: float | None = None,
         angle_deg: float | None = None,
+        x_m: float | None = None,
+        y_m: float | None = None,
         gesture: str | None = None,
     ) -> bool:
         """
@@ -162,6 +170,10 @@ class OscPublisher:
             self.sender.send(self.addresses.doppler_mps, doppler_mps)
         if angle_deg is not None and not self.no_angle:
             self.sender.send(self.addresses.angle_deg, angle_deg)
+        if x_m is not None and self.addresses.x_m:
+            self.sender.send(self.addresses.x_m, x_m)
+        if y_m is not None and self.addresses.y_m:
+            self.sender.send(self.addresses.y_m, y_m)
         self.sender.send(self.addresses.presence, 1.0 if present else 0.0)
         if gesture is not None and not self.no_gesture and self.addresses.gesture:
             self.sender.send_text(self.addresses.gesture, gesture)

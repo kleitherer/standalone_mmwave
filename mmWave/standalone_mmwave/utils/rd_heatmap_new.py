@@ -26,8 +26,9 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from utils.pipeline_utils import RD, pw2db, radarDataLoader
+from utils.pipeline_utils import pw2db, radarDataLoader
 from utils.radar_config_new import RadarConfig
+from utils.rd_power import apply_range_gate_rd, rd_power_from_radar_cube_5d
 
 _MMW_ROOT = _ROOT.parent / "mmw-tracking-versions"
 RADAR_CONFIG_PATH = (
@@ -37,12 +38,7 @@ RADAR_CONFIG_PATH = (
 
 def apply_range_gate(rd_pw, r_axis, max_range_m):
     """Keep range columns with r <= max_range_m (applied after RD FFT)."""
-    keep = r_axis <= max_range_m
-    if not np.any(keep):
-        raise ValueError(
-            f"No range bins <= {max_range_m} m (r_axis spans {r_axis[0]:.3f} .. {r_axis[-1]:.3f})"
-        )
-    return rd_pw[..., keep], r_axis[keep]
+    return apply_range_gate_rd(rd_pw, r_axis, max_range_m)
 
 
 def load_rd_power_stack(
@@ -67,9 +63,13 @@ def load_rd_power_stack(
 
     loader = radarDataLoader(str(npz_path), radar_params)
     radar_cube, _, _, _, r_axis, d_axis = loader.load_data()
-    RDa, _, _ = RD(radar_cube, declutter=True, window=True)
-    rd_pw = (np.abs(RDa) ** 2).mean(axis=2).astype(np.float32)
-    rd_pw, r_axis = apply_range_gate(rd_pw, r_axis, max_range_m)
+    rd_pw, r_axis, d_axis = rd_power_from_radar_cube_5d(
+        radar_cube,
+        radar_params,
+        declutter=True,
+        window=True,
+        max_range_m=max_range_m,
+    )
     return rd_pw, pw2db(rd_pw), r_axis, d_axis, radar_params
 
 

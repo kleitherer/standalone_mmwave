@@ -22,6 +22,8 @@ class StreamFrameResult:
     doppler_mps: float | None = None
     angle_deg: float | None = None
     track1_doppler_mps: float | None = None
+    x_m: float | None = None
+    y_m: float | None = None
     gesture: str = GESTURE_NONE
     body_calibrating: bool = False
     body_calib_progress_s: float | None = None
@@ -80,4 +82,6 @@ def format_status_line(
             else ""
         )
         line2 += f"  angle={result.angle_deg:+.1f}°{rd}"
+    if result.x_m is not None and result.y_m is not None:
+        line2 += f"  xy=({result.x_m:+.2f}, {result.y_m:+.2f})m"
     return f"{line1}\n{line2}"

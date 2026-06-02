@@ -44,9 +44,9 @@
   },
   "gesture": {
     "enabled": false,
-    "mode": "config1",
+    "mode": "config4",
     "config1": {
-      "enabled": true,
+      "enabled": false,
       "max_tracks": 2,
       "associate_gate_m": 0.15,
       "max_range_jump_m": 0.6,
@@ -68,6 +68,57 @@
     "config2": {
       "min_velocity_mps": 0.1,
       "gesture_confirm_frames": 2
+    },
+    "config3": {
+      "max_range_m": 3.4,
+      "power_threshold_db": 0.0,
+      "max_abs_doppler_mps": 3.0,
+      "max_abs_angle_deg": 30.0,
+      "declutter": true,
+      "window": true,
+      "n_angle_fft": 1024
+    },
+    "config4": {
+      "min_range_m": 0.3,
+      "max_range_m": 3.4,
+      "power_threshold_db": 0.0,
+      "max_abs_doppler_mps": 3.0,
+      "max_abs_angle_deg": 30.0,
+      "max_range_jump_m": 0.4,
+      "max_candidates": 8,
+      "declutter": true,
+      "window": true,
+      "n_angle_fft": 1024
+    },
+    "config5": {
+      "min_range_m": 0.3,
+      "max_range_m": 3.4,
+      "power_threshold_db": 0.0,
+      "max_abs_doppler_mps": 3.0,
+      "max_abs_angle_deg": 30.0,
+      "max_candidates": 8,
+      "declutter": true,
+      "window": true,
+      "n_angle_fft": 1024,
+      "process_var_range": 0.05,
+      "process_var_doppler": 0.08,
+      "process_var_angle": 2.0,
+      "meas_var_range": 0.12,
+      "meas_var_doppler": 0.15,
+      "meas_var_angle": 5.0
+    },
+    "config6": {
+      "min_range_m": 0.3,
+      "max_range_m": 3.4,
+      "power_threshold_db": 0.0,
+      "max_abs_doppler_mps": 3.0,
+      "max_doppler_jump_mps": 0.5,
+      "max_abs_angle_deg": 30.0,
+      "max_range_jump_m": 0.3,
+      "max_candidates": 8,
+      "declutter": true,
+      "window": true,
+      "n_angle_fft": 1024
     }
   },
   "run": {
@@ -129,6 +180,8 @@
     "snr2_address": "/radar/snr2_db",
     "doppler_address": "/radar/doppler_mps",
     "angle_address": "/radar/angle_deg",
+    "x_address": "/radar/x_m",
+    "y_address": "/radar/y_m",
     "snr_address": "/radar/snr_db",
     "presence_address": "/radar/presence",
     "gesture_address": "/radar/gesture",

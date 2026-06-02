@@ -256,6 +256,14 @@ def main() -> int:
             f"FoV={float(ang_cfg.get('fov_deg', 90.0)):.0f}°"
         )
     log(f"  {describe_gesture_mode(settings)}")
+    if gesture_mode == "config3":
+        from gesture_recognition.rd_peak import RdPeakConfig
+
+        c3 = RdPeakConfig.from_settings(settings)
+        log(
+            f"  Config3: RD-map peaks from raw frames "
+            f"(range + doppler + ULA angle, n_fft={c3.n_angle_fft}, r<={c3.max_range_m:.1f}m)"
+        )
     log(f"  Avg:      {max(1, int(args.frame_average_count))} frame(s)")
     if args.fast:
         log("  Timing:   as fast as possible")
@@ -277,7 +285,9 @@ def main() -> int:
         log("  Declutter: none (raw RD)")
     npz_path = capture_path / "analysis" / "range_time_snr.npz"
     range_time_npz = RangeTimeSnrNpz.load(npz_path)
-    if range_time_npz is not None:
+    if gesture_mode == "config3":
+        log("  Range SNR: skipped (config3 uses RD-map peaks from raw frames)")
+    elif range_time_npz is not None:
         log(f"  Range SNR: precomputed {npz_path.name} ({range_time_npz.snr_db.shape[0]} frames)")
     else:
         log(f"  Range SNR: computed on the fly (limiter={'on' if args.range_time_limiter else 'off'})")
@@ -316,7 +326,7 @@ def main() -> int:
             background_capture=args.background_capture,
             background_max_frames=args.background_max_frames,
         )
-    elif send_track1_angle:
+    elif send_track1_angle and gesture_mode != "config3":
         range_time_processor = RangeTimeSnrProcessor.from_capture(
             capture_path,
             params,
@@ -351,27 +361,54 @@ def main() -> int:
 
     def _send_frame(frame_idx: int, frame: np.ndarray):
         nonlocal sent
-        if range_time_npz is not None:
+        if gesture_mode == "config3":
+            result = publish_radar_frame(
+                publisher,
+                peak_cfg,
+                None,
+                gesture_processor,
+                frame_dt_s,
+                osc_gesture_limiter,
+                frame_int16=frame,
+                radar_params=params,
+            )
+        elif range_time_npz is not None:
             if track_cfg is not None:
                 peaks = range_time_npz.peaks_for_frame(
                     frame_idx, peak_cfg, for_tracking=True, track_cfg=track_cfg
                 )
             else:
                 peaks = range_time_npz.peaks_for_frame(frame_idx, peak_cfg)
+            result = publish_radar_frame(
+                publisher,
+                peak_cfg,
+                peaks,
+                gesture_processor,
+                frame_dt_s,
+                osc_gesture_limiter,
+                frame_int16=frame if send_track1_angle else None,
+                range_time_processor=range_time_processor if send_track1_angle else None,
+                angle_fft_bins=int(ang_cfg.get("fft_bins", 128)),
+                angle_fov_deg=float(ang_cfg.get("fov_deg", 90.0)),
+                radar_params=params,
+            )
         else:
             peaks = range_time_processor.peaks_from_frame(frame, peak_cfg, track_cfg)
-        result = publish_radar_frame(
-            publisher,
-            peak_cfg,
-            peaks,
-            gesture_processor,
-            frame_dt_s,
-            osc_gesture_limiter,
-            frame_int16=frame if send_track1_angle else None,
-            range_time_processor=range_time_processor if send_track1_angle else None,
-            angle_fft_bins=int(ang_cfg.get("fft_bins", 128)),
-            angle_fov_deg=float(ang_cfg.get("fov_deg", 90.0)),
-        )
+            if peaks is None:
+                return None
+            result = publish_radar_frame(
+                publisher,
+                peak_cfg,
+                peaks,
+                gesture_processor,
+                frame_dt_s,
+                osc_gesture_limiter,
+                frame_int16=frame if send_track1_angle else None,
+                range_time_processor=range_time_processor if send_track1_angle else None,
+                angle_fft_bins=int(ang_cfg.get("fft_bins", 128)),
+                angle_fov_deg=float(ang_cfg.get("fov_deg", 90.0)),
+                radar_params=params,
+            )
         if result is None:
             return None
         if result.published:

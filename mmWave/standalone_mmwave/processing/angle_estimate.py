@@ -45,6 +45,43 @@ def angle_deg_at_rd_cell(
     return float(angle_axis_deg(n_bins, fov_deg)[a_idx])
 
 
+def angle_deg_ula_fft_at_rd_cell(
+    rda: np.ndarray,
+    d_idx: int,
+    r_idx: int,
+    *,
+    n_angle_fft: int = 128,
+) -> tuple[float, int]:
+    """
+    ULA spatial FFT (Bartlett-like) on the complex antenna vector at one RD cell.
+
+    FFT along virtual antennas → pick strongest bin ``k_max`` (fftshift layout).
+    Signed bin ``k = k_max - n_angle_fft // 2`` maps to
+    ``θ = arcsin(2 / n_angle_fft · k)`` (radians internally, returns degrees).
+    """
+    snap = np.asarray(rda[int(d_idx), :, int(r_idx)]).ravel()
+    n_fft = max(2, int(n_angle_fft))
+    if snap.size < 2:
+        return 0.0, 0
+
+    spec = np.fft.fftshift(np.fft.fft(snap, n=n_fft))
+    k_max = int(np.argmax(np.abs(spec) ** 2))
+    k_signed = k_max - (n_fft // 2)
+    sin_theta = float(np.clip(2.0 * k_signed / float(n_fft), -1.0, 1.0))
+    return float(np.degrees(np.arcsin(sin_theta))), k_signed
+
+
+def range_angle_to_cartesian_m(range_m: float, angle_deg: float) -> tuple[float, float]:
+    """
+    Polar (range, azimuth) → Cartesian in the radar ground plane.
+
+    ``x`` = lateral (sin), ``y`` = downrange / boresight (cos); 0° = boresight.
+    """
+    theta = np.deg2rad(float(angle_deg))
+    r = float(range_m)
+    return r * float(np.sin(theta)), r * float(np.cos(theta))
+
+
 def angle_at_track_range(
     rda_declutter: np.ndarray,
     rd_declutter: np.ndarray,
