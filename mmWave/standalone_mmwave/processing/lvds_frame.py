@@ -8,7 +8,7 @@ import numpy as np
 
 # TI mmWave LVDS stream: 16 complex padding/header samples per chirp when enableHeader=1.
 LVDS_COMPLEX_HEADER_PER_CHIRP = 16
-DEFAULT_HEADER_POSITION = "back"  # skip-last-16 wins on walk/kmstest (debug_framing --compare)
+DEFAULT_HEADER_POSITION = "back"  # skip-last-16 validated on walk/kmstest captures
 
 
 def lvds_enable_header(params: Dict[str, Any]) -> bool:

@@ -57,11 +57,20 @@ __all__ = ["OscSender", "_load_settings", "_resolve_capture_path"]
 
 
 class CaptureWriter:
+    """
+    Persist per-frame ADC + wire from :meth:`RadarReceiver.read_frame`.
+
+    - ``frame_*.npy`` — header-stripped ADC (live processing / post_processing)
+    - ``wire_frame_*.npy`` — full UDP/ROS record (``ros_frame_size`` int16) for
+      ``pack_capture_npz`` → ``radar_data`` without reconstructing wire
+    """
+
     def __init__(self, root: Path, save_raw_frames: bool) -> None:
         self.root = root
         self.save_raw_frames = save_raw_frames
         self._raw_dir = self.root / "raw"
         self._n = 0
+        self._logged_first_save = False
         self.root.mkdir(parents=True, exist_ok=True)
         if self.save_raw_frames:
             self._raw_dir.mkdir(parents=True, exist_ok=True)
@@ -69,7 +78,7 @@ class CaptureWriter:
     def write_metadata(self, metadata: dict) -> None:
         (self.root / "metadata.json").write_text(json.dumps(metadata, indent=2, default=str))
 
-    def write_frame(self, frame, *, wire=None) -> None:
+    def write_frame(self, frame, *, wire=None, log=None) -> None:
         if not self.save_raw_frames:
             return
         import numpy as np
@@ -78,6 +87,13 @@ class CaptureWriter:
         np.save(self._raw_dir / f"frame_{self._n:06d}.npy", frame)
         if wire is not None:
             np.save(self._raw_dir / f"wire_frame_{self._n:06d}.npy", wire)
+        if log is not None and not self._logged_first_save:
+            wire_note = f", wire_frame ({wire.size} int16)" if wire is not None else ""
+            log(
+                f"  Saving raw/: frame_*.npy ({np.asarray(frame).size} int16){wire_note} "
+                f"— pack with post_processing.pack_capture_npz"
+            )
+            self._logged_first_save = True
 
 
 def _load_settings(path: Path) -> dict:
@@ -287,7 +303,7 @@ def _parse_args() -> argparse.Namespace:
         "--capture-save-raw",
         action="store_true",
         default=bool(cap_cfg.get("save_raw_frames", True)),
-        help="Save raw frame_*.npy files (if capture is enabled)",
+        help="Save raw/frame_*.npy and raw/wire_frame_*.npy (if capture is enabled)",
     )
     _dur = run_cfg.get("duration_sec")
     p.add_argument(
@@ -494,6 +510,13 @@ def main() -> int:
             }
         )
         log(f"  Capture: {cap_root}")
+        if args.capture_save_raw:
+            ros_b = int(params.get("ros_frame_size", params.get("wire_frame_size", 0) + 256))
+            wire_b = int(params.get("wire_frame_size", params.get("frame_size", 0)))
+            log(
+                f"  Raw save: frame (ADC {params['adc_frame_size']//2} int16) + "
+                f"wire_frame (ROS/UDP {ros_b//2} int16, wire-only {wire_b//2})"
+            )
 
     duration_limit = float(args.duration_sec) if args.duration_sec and args.duration_sec > 0 else 0.0
 
@@ -554,7 +577,7 @@ def main() -> int:
                 )
 
             if cap_writer is not None:
-                cap_writer.write_frame(capture_frame, wire=wire)
+                cap_writer.write_frame(capture_frame, wire=wire, log=log)
 
             peaks = range_time_processor.peaks_from_frame(capture_frame, peak_cfg, track_cfg)
             if peaks is None:

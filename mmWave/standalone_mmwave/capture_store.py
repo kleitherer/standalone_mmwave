@@ -159,8 +159,8 @@ class CaptureSession:
             f"Profile: profile.cfg\n"
             f"Params: metadata.json / session.json\n\n"
             "Reprocess:\n"
-            "  python3 -m processing.process_capture --capture .\n"
-            "  python3 -m processing.target_detect  (import CaptureSession)\n"
+            "  python3 -m post_processing.plot_heatmap --capture .\n"
+            "  python3 -m post_processing.pack_capture_npz --capture . --out packed.npz\n"
         )
         return session
 

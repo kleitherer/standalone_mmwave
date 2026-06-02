@@ -12,7 +12,7 @@
   },
   "processing": {
     "roi_min_m": 0.3,
-    "roi_max_m": 3.4,
+    "roi_max_m": 4,
     "presence_threshold_db": 0.0,
     "calibration_frames": 0,
     "declutter_mean_frames": 45,
@@ -77,7 +77,8 @@
     "enabled": true,
     "base_dir": "captures",
     "name": "ccrma",
-    "save_raw_frames": true
+    "save_raw_frames": true,
+    "_comment_save_raw": "true saves raw/frame_*.npy (ADC) and raw/wire_frame_*.npy (full UDP frame for NPZ pack)"
   },
   "background": {
     "capture": null,
